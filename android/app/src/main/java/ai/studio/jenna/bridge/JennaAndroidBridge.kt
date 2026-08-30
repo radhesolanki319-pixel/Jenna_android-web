@@ -3,6 +3,7 @@ package ai.studio.jenna.bridge
 import ai.studio.jenna.audio.AndroidAudioPlayer
 import ai.studio.jenna.audio.AndroidSpeechManager
 import ai.studio.jenna.audio.AndroidTTSManager
+import ai.studio.jenna.audio.AndroidWakeWordDetector
 import ai.studio.jenna.data.repository.JennaDataRepository
 import android.content.Context
 import android.content.Intent
@@ -25,9 +26,9 @@ class JennaAndroidBridge(
     private val speechManager: AndroidSpeechManager,
     private val ttsManager: AndroidTTSManager,
     private val audioPlayer: AndroidAudioPlayer,
+    private val wakeWordDetector: AndroidWakeWordDetector,
     private val onExitRequested: (() -> Unit)? = null
 ) {
-    private var isWakeWordEnabled = true
     private var isBackIntercepted = false
     private var initialIntentJson = "{}"
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -198,13 +199,13 @@ class JennaAndroidBridge(
     }
 
     // ----------------------------------------------------
-    // Wake-Word Status & Control APIs
+    // Wake-Word & Continuous Voice Status & Control APIs
     // ----------------------------------------------------
     @JavascriptInterface
     fun getWakeWordStatus(): String {
         val obj = JSONObject().apply {
-            put("enabled", isWakeWordEnabled)
-            put("isListening", false) // Passive wake word engine state
+            put("enabled", wakeWordDetector.isEnabled())
+            put("isListening", wakeWordDetector.isListening())
             put("keyword", "Hey Jenna")
         }
         return obj.toString()
@@ -212,8 +213,41 @@ class JennaAndroidBridge(
 
     @JavascriptInterface
     fun setWakeWordEnabled(enabled: Boolean) {
-        this.isWakeWordEnabled = enabled
+        wakeWordDetector.setEnabled(enabled)
         Log.i("JennaBridge", "Wake-word detection status updated: $enabled")
+    }
+
+    @JavascriptInterface
+    fun setContinuousVoiceEnabled(enabled: Boolean) {
+        wakeWordDetector.setContinuousMode(enabled)
+        if (enabled) {
+            ai.studio.jenna.audio.JennaBackgroundAssistantService.startService(context)
+        } else {
+            ai.studio.jenna.audio.JennaBackgroundAssistantService.stopService(context)
+        }
+        Log.i("JennaBridge", "Continuous / Background Voice mode updated: $enabled")
+    }
+
+    @JavascriptInterface
+    fun getContinuousVoiceStatus(): String {
+        val isServiceRunning = ai.studio.jenna.audio.JennaBackgroundAssistantService.isRunning()
+        val obj = JSONObject().apply {
+            put("enabled", wakeWordDetector.isContinuousMode() || isServiceRunning)
+            put("isListening", wakeWordDetector.isListening() || (isServiceRunning && ai.studio.jenna.audio.JennaBackgroundAssistantService.getState() == ai.studio.jenna.audio.JennaBackgroundAssistantService.ServiceState.LISTENING))
+            put("isBackgroundActive", isServiceRunning)
+            put("serviceState", ai.studio.jenna.audio.JennaBackgroundAssistantService.getState().name)
+        }
+        return obj.toString()
+    }
+
+    @JavascriptInterface
+    fun setBackgroundAssistantEnabled(enabled: Boolean) {
+        setContinuousVoiceEnabled(enabled)
+    }
+
+    @JavascriptInterface
+    fun getBackgroundAssistantStatus(): String {
+        return getContinuousVoiceStatus()
     }
 
     // ----------------------------------------------------

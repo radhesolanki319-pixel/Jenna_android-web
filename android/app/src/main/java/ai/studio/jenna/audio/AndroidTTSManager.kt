@@ -14,9 +14,14 @@ class AndroidTTSManager(
 
     private var tts: TextToSpeech? = null
     private var isInitialized = false
+    private var wakeWordDetector: AndroidWakeWordDetector? = null
 
     init {
         tts = TextToSpeech(context.applicationContext, this)
+    }
+
+    fun setWakeWordDetector(detector: AndroidWakeWordDetector) {
+        this.wakeWordDetector = detector
     }
 
     override fun onInit(status: Int) {
@@ -32,15 +37,18 @@ class AndroidTTSManager(
             tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(utteranceId: String?) {
                     Log.d("JennaTTS", "TTS Utterance started: $utteranceId")
+                    wakeWordDetector?.suspend()
                 }
 
                 override fun onDone(utteranceId: String?) {
                     Log.d("JennaTTS", "TTS Utterance done: $utteranceId")
+                    wakeWordDetector?.resume()
                     notifyFinished()
                 }
 
                 override fun onError(utteranceId: String?) {
                     Log.w("JennaTTS", "TTS Utterance error: $utteranceId")
+                    wakeWordDetector?.resume()
                     notifyFinished()
                 }
             })
@@ -62,6 +70,9 @@ class AndroidTTSManager(
             return
         }
 
+        // Suspend wake-word/continuous listening before audio playback
+        wakeWordDetector?.suspend()
+
         stop()
 
         tts?.setSpeechRate(rate.coerceIn(0.5f, 2.0f))
@@ -76,6 +87,8 @@ class AndroidTTSManager(
             tts?.stop()
         } catch (e: Exception) {
             Log.w("JennaTTS", "Error stopping TTS", e)
+        } finally {
+            wakeWordDetector?.resume()
         }
     }
 

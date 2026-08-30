@@ -121,6 +121,8 @@ describe('Cross-Platform Bridge Architecture (Phase 1 Foundation)', () => {
         stopAudio: vi.fn(),
         getWakeWordStatus: vi.fn().mockReturnValue(JSON.stringify({ enabled: true, isListening: true, keyword: 'Hey Jenna' })),
         setWakeWordEnabled: vi.fn(),
+        getContinuousVoiceStatus: vi.fn().mockReturnValue(JSON.stringify({ enabled: true, isListening: true, isBackgroundActive: true })),
+        setContinuousVoiceEnabled: vi.fn(),
         setBackIntercepted: vi.fn(),
         exitApp: vi.fn(),
         getInitialIntent: vi.fn().mockReturnValue(JSON.stringify({ action: 'android.intent.action.MAIN' })),
@@ -146,6 +148,20 @@ describe('Cross-Platform Bridge Architecture (Phase 1 Foundation)', () => {
       const wakeWord = await androidBridge.getWakeWordStatus();
       expect(wakeWord.enabled).toBe(true);
       expect(wakeWord.keyword).toBe('Hey Jenna');
+
+      const contVoice = await androidBridge.getContinuousVoiceStatus();
+      expect(contVoice.enabled).toBe(true);
+      expect(contVoice.isBackgroundActive).toBe(true);
+
+      const bgAssistant = await androidBridge.getBackgroundAssistantStatus();
+      expect(bgAssistant.enabled).toBe(true);
+      expect(bgAssistant.isBackgroundActive).toBe(true);
+
+      await androidBridge.setContinuousVoiceEnabled(true);
+      expect(mockNative.setContinuousVoiceEnabled).toHaveBeenCalledWith(true);
+
+      await androidBridge.setBackgroundAssistantEnabled(false);
+      expect(mockNative.setContinuousVoiceEnabled).toHaveBeenCalledWith(false);
 
       const devInfo = await androidBridge.getDeviceInfo();
       expect(devInfo.brand).toBe('Google');
@@ -194,6 +210,23 @@ describe('Cross-Platform Bridge Architecture (Phase 1 Foundation)', () => {
       expect(received.length).toBe(1);
       expect(received[0].text).toBe('Shared article text from Chrome');
       unregister();
+    });
+
+    it('should handle wake-word listener registration and dispatching', () => {
+      const androidBridge = new AndroidJennaBridge();
+      const keywords: string[] = [];
+
+      const unregister = androidBridge.onWakeWord((keyword) => {
+        keywords.push(keyword);
+      });
+
+      (window as any).__onJennaAndroidWakeWord('Hey Jenna');
+      expect(keywords.length).toBe(1);
+      expect(keywords[0]).toBe('Hey Jenna');
+
+      unregister();
+      (window as any).__onJennaAndroidWakeWord('Hey Jenna');
+      expect(keywords.length).toBe(1);
     });
   });
 

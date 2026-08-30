@@ -5,7 +5,7 @@ import { settingsService } from '../src/core/settingsStore';
 import { platformBridge } from '../src/core/bridge';
 
 describe('Diagnostics & Verification Suite (Phase 1 Foundation)', () => {
-  it('should initialize and execute all 11 diagnostic test definitions', async () => {
+  it('should initialize and execute all 12 diagnostic test definitions', async () => {
     // Mock global fetch for API endpoints during offline diagnostic runs
     const originalFetch = global.fetch;
     global.fetch = vi.fn().mockImplementation((url: string) => {
@@ -44,7 +44,7 @@ describe('Diagnostics & Verification Suite (Phase 1 Foundation)', () => {
       updates.push(tests);
     });
 
-    expect(results.length).toBe(11);
+    expect(results.length).toBe(13);
     const testIds = results.map((t) => t.id);
     expect(testIds).toContain('test_health');
     expect(testIds).toContain('test_ai_brain_registry');
@@ -57,6 +57,8 @@ describe('Diagnostics & Verification Suite (Phase 1 Foundation)', () => {
     expect(testIds).toContain('test_tts');
     expect(testIds).toContain('test_stt');
     expect(testIds).toContain('test_platform');
+    expect(testIds).toContain('test_wake_word');
+    expect(testIds).toContain('test_continuous_voice');
 
     // All test statuses should be success
     const failed = results.filter((r) => r.status === 'failed');

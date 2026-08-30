@@ -22,6 +22,8 @@ import {
   CheckCircle2,
   Activity,
   VolumeX,
+  Mic,
+  Radio,
 } from 'lucide-react';
 import { JennaSettings } from '../types';
 import { memoryService } from '../core/memoryStore';
@@ -634,6 +636,56 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </label>
                   <p className="text-[11px] text-slate-400">
                     Automatically plays vocal synthesis when Jenna finishes generating an assistant reply.
+                  </p>
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800 space-y-2">
+                  <label className="flex items-center justify-between text-xs cursor-pointer">
+                    <div className="flex items-center gap-2">
+                      <Mic className="w-4 h-4 text-indigo-400" />
+                      <span className="font-semibold text-slate-200">Android Wake-Word Detection ("Hey Jenna")</span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={localSettings.voice.wakeWordEnabled !== false}
+                      onChange={(e) => {
+                        const enabled = e.target.checked;
+                        setLocalSettings({
+                          ...localSettings,
+                          voice: { ...localSettings.voice, wakeWordEnabled: enabled },
+                        });
+                        platformBridge.setWakeWordEnabled(enabled);
+                      }}
+                      className="rounded-sm bg-slate-900 border-slate-700 text-indigo-600 focus:ring-0"
+                    />
+                  </label>
+                  <p className="text-[11px] text-slate-400">
+                    Passively listens for the wake word on Android devices to activate Jenna hands-free with haptic and audio confirmation.
+                  </p>
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800 space-y-2">
+                  <label className="flex items-center justify-between text-xs cursor-pointer">
+                    <div className="flex items-center gap-2">
+                      <Radio className="w-4 h-4 text-rose-400" />
+                      <span className="font-semibold text-slate-200">Continuous / Background Voice Listening</span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(localSettings.voice.continuousVoiceMode)}
+                      onChange={(e) => {
+                        const enabled = e.target.checked;
+                        setLocalSettings({
+                          ...localSettings,
+                          voice: { ...localSettings.voice, continuousVoiceMode: enabled },
+                        });
+                        platformBridge.setContinuousVoiceEnabled(enabled);
+                      }}
+                      className="rounded-sm bg-slate-900 border-slate-700 text-indigo-600 focus:ring-0"
+                    />
+                  </label>
+                  <p className="text-[11px] text-slate-400">
+                    Enables fluid back-and-forth hands-free conversational turns and background listening service when the app is not in the active foreground.
                   </p>
                 </div>
 

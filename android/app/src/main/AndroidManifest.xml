@@ -8,6 +8,9 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="true"
@@ -56,6 +59,16 @@
                 <data android:scheme="jenna" android:host="chat" />
             </intent-filter>
         </activity>
+
+        <!-- Continuous / Background Voice & Assistant Foreground Services -->
+        <service
+            android:name=".audio.JennaContinuousVoiceService"
+            android:foregroundServiceType="microphone"
+            android:exported="false" />
+        <service
+            android:name=".audio.JennaBackgroundAssistantService"
+            android:foregroundServiceType="microphone"
+            android:exported="false" />
     </application>
 
 </manifest>

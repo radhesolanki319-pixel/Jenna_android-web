@@ -87,6 +87,8 @@ export interface JennaSettings {
     autoPlayTTS: boolean;
     sttLanguage: string;
     continuousVoiceMode: boolean;
+    wakeWordEnabled?: boolean;
+    wakeWordKeyword?: string;
   };
   appearance: {
     theme: 'dark' | 'light' | 'amoled';

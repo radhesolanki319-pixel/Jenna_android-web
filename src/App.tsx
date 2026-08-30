@@ -143,10 +143,24 @@ export default function App() {
       }
     });
 
-    // 4. Native Wake-word Trigger Listener
+    // 4. Native Wake-word Trigger Listener: Seamlessly start active voice assistant capture
     const unregisterWakeWord = platformBridge.onWakeWord(() => {
       platformBridge.vibrate('medium');
       platformBridge.showToast('Jenna is listening...', false);
+      platformBridge.unlockAudio();
+
+      // Automatically launch speech recognition into the active conversation
+      speechService.startListening(
+        settings.voice.sttLanguage || 'en-US',
+        (transcript, isFinal) => {
+          if (isFinal && transcript.trim()) {
+            handleSendMessage(transcript.trim());
+          }
+        },
+        (err) => {
+          console.warn('[WakeWord STT] Error capturing query:', err);
+        }
+      );
     });
 
     return () => {
@@ -184,7 +198,11 @@ export default function App() {
 
   const handleUpdateSettings = async (updates: Partial<JennaSettings>) => {
     await settingsService.update(updates);
-    setSettings(settingsService.get());
+    const updated = settingsService.get();
+    setSettings(updated);
+    if (updates.voice?.continuousVoiceMode !== undefined) {
+      platformBridge.setContinuousVoiceEnabled(updates.voice.continuousVoiceMode);
+    }
   };
 
   const handleStopStreaming = useCallback(() => {
@@ -193,6 +211,28 @@ export default function App() {
       abortControllerRef.current = null;
     }
     setIsStreaming(false);
+  }, []);
+
+  const triggerContinuousVoiceNextTurn = useCallback(() => {
+    const currentSettings = settingsService.get();
+    if (!currentSettings.voice?.continuousVoiceMode) return;
+
+    // Slight pause so the user perceives the turn transition naturally
+    setTimeout(() => {
+      if (abortControllerRef.current !== null) return;
+      console.log('[Jenna Continuous Voice] 🎙️ Starting next conversational listening turn...');
+      speechService.startListening(
+        currentSettings.voice.sttLanguage || 'en-US',
+        (transcript, isFinal) => {
+          if (isFinal && transcript.trim()) {
+            handleSendMessage(transcript.trim());
+          }
+        },
+        (err) => {
+          console.log('[Jenna Continuous Voice] Turn finished or timeout:', err);
+        }
+      );
+    }, 450);
   }, []);
 
   // Send message and handle SSE streaming
@@ -368,13 +408,18 @@ export default function App() {
           pitch: settings.voice.speechPitch,
           onSuccess: () => {
             console.log(`[Jenna Auto-TTS] ✅ Auto-TTS playback completed for message "${assistantMsg.id}".`);
+            triggerContinuousVoiceNextTurn();
           },
           onError: (err) => {
             console.warn(`[Jenna Auto-TTS] ❌ Auto-TTS playback reported error for message "${assistantMsg.id}":`, err);
+            triggerContinuousVoiceNextTurn();
           },
         });
-      } else if (!settings.voice.autoPlayTTS) {
-        console.log('[Jenna Auto-TTS] ⏸️ Auto-TTS is disabled in settings, skipping voice playback.');
+      } else {
+        if (!settings.voice.autoPlayTTS) {
+          console.log('[Jenna Auto-TTS] ⏸️ Auto-TTS is disabled in settings, skipping voice playback.');
+        }
+        triggerContinuousVoiceNextTurn();
       }
     } catch (err: any) {
       if (err.name === 'AbortError') {
@@ -496,6 +541,7 @@ export default function App() {
           onOpenMobileMenu={() => setIsMobileMenuOpen(true)}
           onOpenMemory={() => setIsMemoryOpen(true)}
           onOpenSettings={() => setIsSettingsOpen(true)}
+          onUpdateSettings={handleUpdateSettings}
           settings={settings}
         />
       </main>

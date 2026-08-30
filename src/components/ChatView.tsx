@@ -20,6 +20,7 @@ import {
   Info,
   ChevronDown,
   Settings,
+  Radio,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -38,6 +39,7 @@ interface ChatViewProps {
   onOpenMobileMenu: () => void;
   onOpenMemory: () => void;
   onOpenSettings: () => void;
+  onUpdateSettings?: (updates: Partial<JennaSettings>) => Promise<void>;
   settings: JennaSettings;
 }
 
@@ -51,6 +53,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onOpenMobileMenu,
   onOpenMemory,
   onOpenSettings,
+  onUpdateSettings,
   settings,
 }) => {
   const [inputText, setInputText] = useState('');
@@ -83,8 +86,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
     const unsub = speechService.subscribe(() => {
       const playingId = speechService.getCurrentPlayingMessageId();
       const state = speechService.getPlaybackState();
+      const recState = speechService.getRecognitionState();
       setActiveAudioMessageId(playingId);
       setIsAudioLoading(state === 'loading');
+      setIsListening(recState === 'listening');
     });
     return unsub;
   }, []);
@@ -184,6 +189,22 @@ export const ChatView: React.FC<ChatViewProps> = ({
     },
   ];
 
+  const handleToggleContinuousVoice = async () => {
+    const nextVal = !settings.voice.continuousVoiceMode;
+    if (onUpdateSettings) {
+      await onUpdateSettings({
+        voice: {
+          ...settings.voice,
+          continuousVoiceMode: nextVal,
+        },
+      });
+    }
+    await platformBridge.setContinuousVoiceEnabled(nextVal);
+    if (nextVal) {
+      platformBridge.vibrate('light');
+    }
+  };
+
   return (
     <div className="flex flex-col h-full bg-slate-950 text-slate-100 relative overflow-hidden">
       {/* Top Header Bar */}
@@ -244,6 +265,31 @@ export const ChatView: React.FC<ChatViewProps> = ({
             <Volume2 className="w-3.5 h-3.5 text-emerald-400" />
             <span className="hidden sm:inline text-slate-300 font-mono text-[11px]">
               {settings.voice.geminiVoice}
+            </span>
+          </button>
+
+          {/* Hands-Free / Continuous Voice Mode Toggle */}
+          <button
+            id="btn-continuous-voice-toggle"
+            onClick={handleToggleContinuousVoice}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs font-medium transition-all duration-200 cursor-pointer ${
+              settings.voice.continuousVoiceMode
+                ? 'bg-rose-950/60 hover:bg-rose-900/70 text-rose-300 border-rose-700/60 shadow-xs shadow-rose-900/30'
+                : 'bg-slate-800/60 hover:bg-slate-800 text-slate-400 border-slate-700/60'
+            }`}
+            title={
+              settings.voice.continuousVoiceMode
+                ? 'Continuous Voice / Hands-Free Mode is ACTIVE. Click to turn off.'
+                : 'Continuous Voice / Hands-Free Mode is OFF. Click to activate.'
+            }
+          >
+            <Radio
+              className={`w-3.5 h-3.5 ${
+                settings.voice.continuousVoiceMode ? 'text-rose-400 animate-pulse' : 'text-slate-400'
+              }`}
+            />
+            <span className="hidden sm:inline">
+              {settings.voice.continuousVoiceMode ? 'Hands-Free' : 'Hands-Free'}
             </span>
           </button>
 

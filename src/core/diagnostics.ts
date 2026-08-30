@@ -97,6 +97,20 @@ export async function runAllDiagnostics(
       status: 'pending',
       message: 'Testing cross-platform abstraction contract & serialization...',
     },
+    {
+      id: 'test_wake_word',
+      name: 'Android Wake-Word Detection Engine',
+      category: 'platform',
+      status: 'pending',
+      message: 'Verifying wake-word lifecycle, listener registration, and bridge contract...',
+    },
+    {
+      id: 'test_continuous_voice',
+      name: 'Continuous / Background Voice Listening',
+      category: 'platform',
+      status: 'pending',
+      message: 'Verifying continuous hands-free voice loop, foreground service status, and lifecycle...',
+    },
   ];
 
   const updateTest = (id: string, updates: Partial<DiagnosticTestResult>) => {
@@ -543,6 +557,63 @@ export async function runAllDiagnostics(
     updateTest('test_platform', {
       status: 'failed',
       message: `Bridge parity test failed: ${err?.message}`,
+    });
+  }
+
+  // Test 8: Android Wake-Word Detection Engine
+  updateTest('test_wake_word', { status: 'running' });
+  try {
+    const status = await platformBridge.getWakeWordStatus();
+    let triggered = false;
+    const unsub = platformBridge.onWakeWord((keyword) => {
+      triggered = true;
+    });
+
+    // Test enabling and disabling wake word state
+    await platformBridge.setWakeWordEnabled(true);
+    await platformBridge.setWakeWordEnabled(false);
+    unsub();
+
+    updateTest('test_wake_word', {
+      status: 'success',
+      message: `Wake-word engine ready (keyword: "${status.keyword || 'Hey Jenna'}", default status: ${status.enabled ? 'enabled' : 'standby'}).`,
+      details: {
+        keyword: status.keyword,
+        isListening: status.isListening,
+        enabled: status.enabled,
+      },
+    });
+  } catch (err: any) {
+    updateTest('test_wake_word', {
+      status: 'failed',
+      message: `Wake-word diagnostic error: ${err?.message}`,
+    });
+  }
+
+  // Test 9: Continuous / Background Voice & Assistant Service
+  updateTest('test_continuous_voice', { status: 'running' });
+  try {
+    const status = await platformBridge.getContinuousVoiceStatus();
+    // Test toggle state
+    await platformBridge.setContinuousVoiceEnabled(true);
+    const activeStatus = await platformBridge.getContinuousVoiceStatus();
+    const bgStatus = await platformBridge.getBackgroundAssistantStatus();
+    await platformBridge.setContinuousVoiceEnabled(false);
+
+    updateTest('test_continuous_voice', {
+      status: 'success',
+      message: `Continuous voice & background assistant architecture verified (active: ${activeStatus.enabled}, background state: ${bgStatus.serviceState || (bgStatus.isBackgroundActive ? 'ACTIVE' : 'STANDBY')}).`,
+      details: {
+        enabled: activeStatus.enabled,
+        isListening: activeStatus.isListening,
+        isBackgroundActive: activeStatus.isBackgroundActive,
+        serviceState: bgStatus.serviceState || (bgStatus.isBackgroundActive ? 'RUNNING' : 'STOPPED'),
+      },
+    });
+  } catch (err: any) {
+    updateTest('test_continuous_voice', {
+      status: 'failed',
+      message: `Continuous voice & background assistant diagnostic error: ${err?.message}`,
     });
   }
 

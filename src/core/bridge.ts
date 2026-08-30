@@ -59,6 +59,11 @@ export interface IJennaAudioBridge {
   
   unlockAudio(): void;
   stopAllAudio(): void;
+
+  getContinuousVoiceStatus?(): Promise<ContinuousVoiceStatus>;
+  setContinuousVoiceEnabled?(enabled: boolean): Promise<void>;
+  getBackgroundAssistantStatus?(): Promise<ContinuousVoiceStatus>;
+  setBackgroundAssistantEnabled?(enabled: boolean): Promise<void>;
 }
 
 /**
@@ -479,6 +484,8 @@ export class WebJennaBridge implements IJennaStorageBridge, IJennaAudioBridge {
         autoPlayTTS: true,
         sttLanguage: 'en-US',
         continuousVoiceMode: false,
+        wakeWordEnabled: true,
+        wakeWordKeyword: 'Hey Jenna',
       },
       appearance: {
         theme: 'dark',
@@ -904,6 +911,37 @@ export class WebJennaBridge implements IJennaStorageBridge, IJennaAudioBridge {
       this.activeAudioElement = null;
     }
   }
+
+  async getContinuousVoiceStatus(): Promise<ContinuousVoiceStatus> {
+    try {
+      const settings = await this.getSettings();
+      return {
+        enabled: Boolean(settings.voice?.continuousVoiceMode),
+        isListening: false,
+        isBackgroundActive: false,
+      };
+    } catch {
+      return { enabled: false, isListening: false, isBackgroundActive: false };
+    }
+  }
+
+  async setContinuousVoiceEnabled(enabled: boolean): Promise<void> {
+    try {
+      const settings = await this.getSettings();
+      settings.voice.continuousVoiceMode = enabled;
+      await this.saveSettings(settings);
+    } catch (err) {
+      console.warn('[Jenna Web Bridge] Error updating continuous voice setting:', err);
+    }
+  }
+
+  async getBackgroundAssistantStatus(): Promise<ContinuousVoiceStatus> {
+    return this.getContinuousVoiceStatus();
+  }
+
+  async setBackgroundAssistantEnabled(enabled: boolean): Promise<void> {
+    return this.setContinuousVoiceEnabled(enabled);
+  }
 }
 
 /**
@@ -913,6 +951,13 @@ export interface WakeWordStatus {
   enabled: boolean;
   isListening: boolean;
   keyword: string;
+}
+
+export interface ContinuousVoiceStatus {
+  enabled: boolean;
+  isListening: boolean;
+  isBackgroundActive: boolean;
+  serviceState?: string;
 }
 
 export interface AndroidIntentPayload {
@@ -958,9 +1003,13 @@ export interface IJennaAndroidNative {
   playBase64Audio(base64Data: string, mimeType: string): boolean;
   stopAudio(): void;
 
-  // Wake-word Status & Control
+  // Wake-word & Continuous Voice Status & Control
   getWakeWordStatus(): string; // JSON
   setWakeWordEnabled(enabled: boolean): void;
+  getContinuousVoiceStatus(): string; // JSON
+  setContinuousVoiceEnabled(enabled: boolean): void;
+  getBackgroundAssistantStatus?(): string; // JSON
+  setBackgroundAssistantEnabled?(enabled: boolean): void;
 
   // Back Button & Navigation
   setBackIntercepted(intercepted: boolean): void;
@@ -1006,6 +1055,9 @@ export class AndroidJennaBridge implements IJennaStorageBridge, IJennaAudioBridg
 
     // Native Wake-word detection event
     (window as any).__onJennaAndroidWakeWordDetected = (keyword = 'Hey Jenna') => {
+      this.wakeWordListeners.forEach((fn) => fn(keyword));
+    };
+    (window as any).__onJennaAndroidWakeWord = (keyword = 'Hey Jenna') => {
       this.wakeWordListeners.forEach((fn) => fn(keyword));
     };
 
@@ -1342,6 +1394,54 @@ export class AndroidJennaBridge implements IJennaStorageBridge, IJennaAudioBridg
     }
   }
 
+  async getContinuousVoiceStatus(): Promise<ContinuousVoiceStatus> {
+    if (this.native) {
+      try {
+        const raw = this.native.getContinuousVoiceStatus();
+        if (raw) return JSON.parse(raw);
+      } catch (err) {
+        console.warn('[Jenna Android Bridge] Error fetching continuous voice status:', err);
+      }
+    }
+    return this.webFallback.getContinuousVoiceStatus();
+  }
+
+  async setContinuousVoiceEnabled(enabled: boolean): Promise<void> {
+    if (this.native) {
+      try {
+        this.native.setContinuousVoiceEnabled(enabled);
+        return;
+      } catch (err) {
+        console.warn('[Jenna Android Bridge] Error setting continuous voice status:', err);
+      }
+    }
+    return this.webFallback.setContinuousVoiceEnabled(enabled);
+  }
+
+  async getBackgroundAssistantStatus(): Promise<ContinuousVoiceStatus> {
+    if (this.native && typeof this.native.getBackgroundAssistantStatus === 'function') {
+      try {
+        const raw = this.native.getBackgroundAssistantStatus();
+        if (raw) return JSON.parse(raw);
+      } catch (err) {
+        console.warn('[Jenna Android Bridge] Error fetching background assistant status:', err);
+      }
+    }
+    return this.getContinuousVoiceStatus();
+  }
+
+  async setBackgroundAssistantEnabled(enabled: boolean): Promise<void> {
+    if (this.native && typeof this.native.setBackgroundAssistantEnabled === 'function') {
+      try {
+        this.native.setBackgroundAssistantEnabled(enabled);
+        return;
+      } catch (err) {
+        console.warn('[Jenna Android Bridge] Error setting background assistant status:', err);
+      }
+    }
+    return this.setContinuousVoiceEnabled(enabled);
+  }
+
   onWakeWord(callback: (keyword: string) => void): () => void {
     this.wakeWordListeners.push(callback);
     return () => {
@@ -1590,13 +1690,29 @@ export class UnifiedPlatformBridge implements IJennaStorageBridge, IJennaAudioBr
     this.androidBridge.vibrate(patternType);
   }
 
-  // Wake-word methods
+  // Wake-word & Continuous Voice methods
   getWakeWordStatus(): Promise<WakeWordStatus> {
     return this.androidBridge.getWakeWordStatus();
   }
 
   setWakeWordEnabled(enabled: boolean): Promise<void> {
     return this.androidBridge.setWakeWordEnabled(enabled);
+  }
+
+  getContinuousVoiceStatus(): Promise<ContinuousVoiceStatus> {
+    return this.androidBridge.getContinuousVoiceStatus();
+  }
+
+  setContinuousVoiceEnabled(enabled: boolean): Promise<void> {
+    return this.androidBridge.setContinuousVoiceEnabled(enabled);
+  }
+
+  getBackgroundAssistantStatus(): Promise<ContinuousVoiceStatus> {
+    return this.androidBridge.getBackgroundAssistantStatus();
+  }
+
+  setBackgroundAssistantEnabled(enabled: boolean): Promise<void> {
+    return this.androidBridge.setBackgroundAssistantEnabled(enabled);
   }
 
   onWakeWord(callback: (keyword: string) => void): () => void {

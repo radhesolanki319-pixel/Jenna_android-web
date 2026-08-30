@@ -16,6 +16,11 @@ class AndroidSpeechManager(
 ) {
     private var speechRecognizer: SpeechRecognizer? = null
     private var isListening = false
+    private var wakeWordDetector: AndroidWakeWordDetector? = null
+
+    fun setWakeWordDetector(detector: AndroidWakeWordDetector) {
+        this.wakeWordDetector = detector
+    }
 
     fun startListening(lang: String): Boolean {
         if (!SpeechRecognizer.isRecognitionAvailable(context)) {
@@ -23,6 +28,9 @@ class AndroidSpeechManager(
             notifyError("Speech recognition not available on this device.")
             return false
         }
+
+        // Suspend passive wake-word listening while active speech recognition holds the microphone
+        wakeWordDetector?.suspend()
 
         stopListening()
 
@@ -44,6 +52,8 @@ class AndroidSpeechManager(
                     override fun onEndOfSpeech() {
                         Log.d("JennaSpeech", "End of speech")
                         notifyEnd()
+                        // Active speaking ended; resume wake word detection
+                        wakeWordDetector?.resume()
                     }
 
                     override fun onError(error: Int) {
@@ -62,6 +72,8 @@ class AndroidSpeechManager(
                         Log.w("JennaSpeech", "SpeechRecognizer error: $message")
                         notifyError(message)
                         isListening = false
+                        // Resume wake word detector on error
+                        wakeWordDetector?.resume()
                     }
 
                     override fun onResults(results: Bundle?) {
@@ -70,6 +82,8 @@ class AndroidSpeechManager(
                         Log.d("JennaSpeech", "Final Speech Result: $text")
                         notifyResult(text, isFinal = true)
                         isListening = false
+                        // Finished recognition; resume wake-word detection
+                        wakeWordDetector?.resume()
                     }
 
                     override fun onPartialResults(partialResults: Bundle?) {
@@ -96,6 +110,7 @@ class AndroidSpeechManager(
         } catch (e: Exception) {
             Log.e("JennaSpeech", "Failed to start speech recognizer", e)
             notifyError(e.localizedMessage ?: "Failed to start speech recognition")
+            wakeWordDetector?.resume()
             return false
         }
     }
@@ -109,6 +124,7 @@ class AndroidSpeechManager(
         } finally {
             speechRecognizer = null
             isListening = false
+            wakeWordDetector?.resume()
         }
     }
 

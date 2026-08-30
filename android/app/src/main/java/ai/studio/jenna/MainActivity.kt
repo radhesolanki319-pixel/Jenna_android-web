@@ -3,6 +3,7 @@ package ai.studio.jenna
 import ai.studio.jenna.audio.AndroidAudioPlayer
 import ai.studio.jenna.audio.AndroidSpeechManager
 import ai.studio.jenna.audio.AndroidTTSManager
+import ai.studio.jenna.audio.AndroidWakeWordDetector
 import ai.studio.jenna.bridge.JennaAndroidBridge
 import ai.studio.jenna.data.db.JennaDatabase
 import ai.studio.jenna.data.repository.JennaDataRepository
@@ -39,6 +40,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var speechManager: AndroidSpeechManager
     private lateinit var ttsManager: AndroidTTSManager
     private lateinit var audioPlayer: AndroidAudioPlayer
+    private lateinit var wakeWordDetector: AndroidWakeWordDetector
     private lateinit var bridge: JennaAndroidBridge
     private var isWebPageLoaded = false
 
@@ -127,6 +129,11 @@ class MainActivity : AppCompatActivity() {
         speechManager = AndroidSpeechManager(this) { webView }
         ttsManager = AndroidTTSManager(this) { webView }
         audioPlayer = AndroidAudioPlayer(this) { webView }
+        wakeWordDetector = AndroidWakeWordDetector(this, { webView })
+
+        // Cross-wire speech manager, TTS manager, and wake word detector
+        speechManager.setWakeWordDetector(wakeWordDetector)
+        ttsManager.setWakeWordDetector(wakeWordDetector)
 
         bridge = JennaAndroidBridge(
             context = this,
@@ -134,6 +141,7 @@ class MainActivity : AppCompatActivity() {
             speechManager = speechManager,
             ttsManager = ttsManager,
             audioPlayer = audioPlayer,
+            wakeWordDetector = wakeWordDetector,
             onExitRequested = { finish() }
         )
     }
@@ -227,6 +235,9 @@ class MainActivity : AppCompatActivity() {
         if (requestCode == PERMISSION_REQUEST_RECORD_AUDIO) {
             if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                 Toast.makeText(this, "Microphone permission enabled", Toast.LENGTH_SHORT).show()
+                if (wakeWordDetector.isEnabled()) {
+                    wakeWordDetector.start()
+                }
             }
         }
     }
@@ -252,8 +263,26 @@ class MainActivity : AppCompatActivity() {
         })
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (wakeWordDetector.isEnabled() || wakeWordDetector.isContinuousMode() || ai.studio.jenna.audio.JennaBackgroundAssistantService.isRunning()) {
+            wakeWordDetector.resume()
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        if (!wakeWordDetector.isContinuousMode() && !ai.studio.jenna.audio.JennaBackgroundAssistantService.isRunning()) {
+            wakeWordDetector.suspend()
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
+        if (!wakeWordDetector.isContinuousMode()) {
+            ai.studio.jenna.audio.JennaBackgroundAssistantService.stopService(this)
+        }
+        wakeWordDetector.stop()
         speechManager.stopListening()
         ttsManager.shutdown()
         audioPlayer.stop()
