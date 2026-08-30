@@ -1,8 +1,9 @@
 import express, { Request, Response } from 'express';
 import path from 'path';
 import dotenv from 'dotenv';
-import { GoogleGenAI, Type, Modality } from '@google/genai';
+import { Type } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
+import { aiBrain } from './src/core/ai';
 
 dotenv.config();
 
@@ -11,49 +12,8 @@ const PORT = 3000;
 
 app.use(express.json({ limit: '10mb' }));
 
-// Lazy initializer for Gemini client to ensure smooth startup
-let aiClient: GoogleGenAI | null = null;
-function getGenAI(): GoogleGenAI {
-  if (!aiClient) {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      console.warn('[Jenna Server] GEMINI_API_KEY is not set in environment.');
-    }
-    aiClient = new GoogleGenAI({
-      apiKey: apiKey || '',
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        },
-      },
-    });
-  }
-  return aiClient;
-}
-
 // Utility: Sleep helper for backoff
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-// Utility: Check if error is transient/retryable (503 High demand, 429 Rate limit, etc.)
-function isRetryableError(err: any): boolean {
-  if (!err) return false;
-  const status = err.status || err.code || err.statusCode;
-  const msg = (err.message || '').toLowerCase();
-  return (
-    status === 503 ||
-    status === 429 ||
-    status === 500 ||
-    status === 502 ||
-    status === 504 ||
-    msg.includes('503') ||
-    msg.includes('unavailable') ||
-    msg.includes('high demand') ||
-    msg.includes('resource_exhausted') ||
-    msg.includes('rate limit') ||
-    msg.includes('overloaded') ||
-    msg.includes('temporarily unavailable')
-  );
-}
 
 // Smart heuristic title fallback when AI model is unavailable or rate limited
 function extractHeuristicTitle(prompt: string): string {
@@ -69,108 +29,13 @@ function extractHeuristicTitle(prompt: string): string {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
-// Resilient Stream Generator with Automatic Seamless Model Failover
-async function streamGeminiWithFallback(
-  ai: GoogleGenAI,
-  primaryModel: string,
-  contents: any[],
-  config: any,
-  onToken: (token: string) => void,
-  isAborted?: () => boolean
-): Promise<string> {
-  const candidateModels = Array.from(
-    new Set([primaryModel, 'gemini-3.1-flash-lite', 'gemini-flash-latest'])
-  );
-
-  let lastError: any = null;
-  let tokensEmitted = 0;
-
-  for (const modelToTry of candidateModels) {
-    if (isAborted?.()) {
-      return modelToTry;
-    }
-
-    try {
-      const stream = await ai.models.generateContentStream({
-        model: modelToTry,
-        contents,
-        config,
-      });
-
-      for await (const chunk of stream) {
-        if (isAborted?.()) {
-          break;
-        }
-
-        const token =
-          chunk.text ||
-          chunk.candidates?.[0]?.content?.parts?.map((p: any) => p.text).filter(Boolean).join('') ||
-          '';
-        if (token) {
-          tokensEmitted++;
-          onToken(token);
-        }
-      }
-
-      return modelToTry;
-    } catch (err: any) {
-      if (isAborted?.()) {
-        return modelToTry;
-      }
-
-      lastError = err;
-      // If tokens were already partially emitted to client, propagate error
-      if (tokensEmitted > 0) {
-        throw err;
-      }
-
-      // Log smooth failover without stderr warn
-      console.log(`[Jenna API] Failover: model ${modelToTry} busy/unavailable. Trying next model...`);
-      continue;
-    }
-  }
-
-  throw lastError || new Error('All model attempts failed.');
-}
-
-// Resilient Content Generator with Automatic Seamless Model Failover
-async function generateContentWithFallback(
-  ai: GoogleGenAI,
-  primaryModel: string,
-  contents: any,
-  config: any
-) {
-  const candidateModels = Array.from(
-    new Set([primaryModel, 'gemini-3.1-flash-lite', 'gemini-flash-latest'])
-  );
-
-  let lastError: any = null;
-
-  for (const modelToTry of candidateModels) {
-    try {
-      const response = await ai.models.generateContent({
-        model: modelToTry,
-        contents,
-        config,
-      });
-      return { response, modelUsed: modelToTry };
-    } catch (err: any) {
-      lastError = err;
-      console.log(`[Jenna API] Content gen failover from ${modelToTry}...`);
-      continue;
-    }
-  }
-
-  throw lastError || new Error('Content generation failed on all models.');
-}
-
 // Health check
 app.get('/api/health', (req: Request, res: Response) => {
   const hasKey = Boolean(process.env.GEMINI_API_KEY);
   res.json({
     status: 'ok',
     assistant: 'Jenna',
-    version: '1.0.0-phase1',
+    version: '1.0.0-phase2-item2',
     hasApiKey: hasKey,
     timestamp: Date.now(),
   });
@@ -397,27 +262,35 @@ app.post('/api/chat/stream', async (req: Request, res: Response) => {
     res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders?.();
 
-    const ai = getGenAI();
     const primaryModel = model || 'gemini-3.7-flash';
+    const isClientDisconnected = () => {
+      if (req.destroyed || res.writableEnded) return true;
+      return res.socket ? !res.socket.writable : false;
+    };
 
-    const isClientDisconnected = () => req.destroyed || res.writableEnded || !res.socket?.writable;
-
-    const modelUsed = await streamGeminiWithFallback(
-      ai,
+    const { modelUsed, tokensEmitted } = await aiBrain.streamChat(
       primaryModel,
-      contents,
+      validTurns,
       {
         systemInstruction: fullSystemPrompt,
         temperature: Number(temperature) || 0.7,
-      },
-      (token: string) => {
-        if (!isClientDisconnected()) {
-          res.write(`data: ${JSON.stringify({ type: 'token', token })}\n\n`);
-          (res as any).flush?.();
-        }
-      },
-      isClientDisconnected
+        onToken: (token: string) => {
+          if (!isClientDisconnected()) {
+            res.write(`data: ${JSON.stringify({ type: 'token', token })}\n\n`);
+            (res as any).flush?.();
+          }
+        },
+        isAborted: isClientDisconnected,
+      }
     );
+
+    if (tokensEmitted === 0 && !isClientDisconnected()) {
+      res.write(
+        `data: ${JSON.stringify({ type: 'error', error: 'No response was generated by Jenna. Please retry.' })}\n\n`
+      );
+      res.end();
+      return;
+    }
 
     if (!isClientDisconnected()) {
       res.write(`data: ${JSON.stringify({ type: 'done', model: modelUsed })}\n\n`);
@@ -427,7 +300,7 @@ app.post('/api/chat/stream', async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error('[Jenna API] Stream error:', error);
     let errorMessage = error?.message || 'Failed to generate response from Jenna.';
-    if (isRetryableError(error)) {
+    if (error?.isRetryable) {
       errorMessage =
         'Jenna is currently experiencing high demand. Please retry in a moment.';
     }
@@ -453,21 +326,23 @@ app.post('/api/chat/title', async (req: Request, res: Response) => {
     }
 
     const fallbackTitle = extractHeuristicTitle(firstMessage);
-    const ai = getGenAI();
 
     try {
-      // Use gemini-3.1-flash-lite for ultra-fast and resilient title generation
-      const { response } = await generateContentWithFallback(
-        ai,
-        'gemini-3.1-flash-lite',
-        `Create a concise, descriptive title (3-5 words maximum, no quotes, no punctuation at the end) for a chat that begins with this user message:\n"${firstMessage.slice(0, 300)}"`,
+      const { text } = await aiBrain.generateText(
+        'gemini-3.7-flash',
+        [
+          {
+            role: 'user',
+            content: `Create a concise, descriptive title (3-5 words maximum, no quotes, no punctuation at the end) for a chat that begins with this user message:\n"${firstMessage.slice(0, 300)}"`,
+          },
+        ],
         {
           systemInstruction: 'You are a concise title generator. Respond only with the title.',
           temperature: 0.2,
         }
       );
 
-      const title = response.text?.trim().replace(/^["']|["']$/g, '') || fallbackTitle;
+      const title = text?.trim().replace(/^["']|["']$/g, '') || fallbackTitle;
       res.json({ title: title.slice(0, 50) });
     } catch {
       // Fallback gracefully without throwing or warning loudly
@@ -487,7 +362,6 @@ app.post('/api/memory/extract', async (req: Request, res: Response) => {
       return;
     }
 
-    const ai = getGenAI();
     const transcript = messages
       .slice(-6)
       .map((m: { role: string; content: string }) => `${m.role.toUpperCase()}: ${m.content}`)
@@ -499,10 +373,9 @@ Snippet:
 ${transcript}`;
 
     try {
-      const { response } = await generateContentWithFallback(
-        ai,
-        'gemini-3.1-flash-lite',
-        prompt,
+      const { text } = await aiBrain.generateText(
+        'gemini-3.7-flash',
+        [{ role: 'user', content: prompt }],
         {
           systemInstruction: 'You extract durable user facts and preferences for long-term AI memory.',
           responseMimeType: 'application/json',
@@ -532,7 +405,7 @@ ${transcript}`;
         }
       );
 
-      const jsonText = response.text?.trim() || '[]';
+      const jsonText = text?.trim() || '[]';
       let rawMemories = [];
       try {
         rawMemories = JSON.parse(jsonText);
@@ -561,8 +434,6 @@ ${transcript}`;
 });
 
 // Gemini High-Definition TTS Endpoint
-let ttsQuotaCooldownUntil = 0;
-
 app.post('/api/tts', async (req: Request, res: Response) => {
   try {
     const { text, voice = 'Kore' } = req.body;
@@ -571,66 +442,18 @@ app.post('/api/tts', async (req: Request, res: Response) => {
       return;
     }
 
-    // If quota cooldown is active, return immediate fallback without waiting for a 429 response
-    if (Date.now() < ttsQuotaCooldownUntil) {
-      res.json({ fallback: true, error: 'Neural TTS in quota cooldown, defaulting to browser speech synthesis.' });
-      return;
-    }
-
     const validVoice = ['Kore', 'Zephyr', 'Puck', 'Fenrir', 'Charon'].includes(voice) ? voice : 'Kore';
-    const ai = getGenAI();
-
-    // Sanitize text for TTS (strip markdown bold/links)
-    const cleanText = text
-      .replace(/[*_#`[\]()]/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, 1000); // 1000 chars safety limit for Phase 1 chunk
 
     try {
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.1-flash-tts-preview',
-        contents: [{ parts: [{ text: cleanText }] }],
-        config: {
-          responseModalities: [Modality.AUDIO],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: { voiceName: validVoice },
-            },
-          },
-        },
-      });
-
-      const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-      const mimeType =
-        response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.mimeType || 'audio/l16; rate=24000; channels=1';
-
-      if (!base64Audio) {
-        res.json({ fallback: true, error: 'No audio data received from Gemini TTS.' });
-        return;
-      }
-
+      const speech = await aiBrain.generateSpeech(text, validVoice);
       res.json({
-        audio: base64Audio,
-        mimeType,
-        voice: validVoice,
-        text: cleanText,
+        audio: speech.audioBase64,
+        mimeType: speech.mimeType,
+        voice: speech.voice,
+        text: text.slice(0, 1000),
       });
     } catch (ttsErr: any) {
-      const errMsg = ttsErr?.message || String(ttsErr);
-      if (
-        errMsg.includes('429') ||
-        errMsg.includes('RESOURCE_EXHAUSTED') ||
-        errMsg.includes('quota') ||
-        errMsg.includes('Quota exceeded')
-      ) {
-        // Free tier request quota reached - set a 60-second cooldown
-        ttsQuotaCooldownUntil = Date.now() + 60000;
-        console.info('[Jenna API] Neural TTS daily free-tier limit reached, seamlessly falling back to browser speech synthesis.');
-      } else {
-        console.warn('[Jenna API] Neural TTS notice, switching to browser TTS:', errMsg.slice(0, 120));
-      }
-      res.json({ fallback: true, error: 'Neural TTS fallback' });
+      res.json({ fallback: true, error: ttsErr?.message || 'Neural TTS fallback' });
     }
   } catch (err: any) {
     console.error('[Jenna API] TTS Error:', err);

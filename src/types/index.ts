@@ -115,3 +115,5 @@ export interface DiagnosticTestResult {
   latencyMs?: number;
   details?: Record<string, unknown>;
 }
+
+export * from './ai';

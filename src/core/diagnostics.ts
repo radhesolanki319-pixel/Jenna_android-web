@@ -14,6 +14,7 @@ import { DiagnosticTestResult } from '../types';
 import { platformBridge } from './bridge';
 import { memoryService } from './memoryStore';
 import { settingsService } from './settingsStore';
+import { AVAILABLE_MODELS, getModelMetadata, getDefaultModel, getFallbackChain } from './ai';
 
 export async function runAllDiagnostics(
   onUpdate: (results: DiagnosticTestResult[]) => void
@@ -25,6 +26,13 @@ export async function runAllDiagnostics(
       category: 'api',
       status: 'pending',
       message: 'Checking server health and Gemini API credentials...',
+    },
+    {
+      id: 'test_ai_brain_registry',
+      name: 'Model-Agnostic AI Brain & Registry',
+      category: 'api',
+      status: 'pending',
+      message: 'Testing canonical AIProvider abstraction, Model Registry & fallback chains...',
     },
     {
       id: 'test_stream',
@@ -123,6 +131,40 @@ export async function runAllDiagnostics(
     updateTest('test_health', {
       status: 'failed',
       message: `Failed: ${err?.message || 'Server unreachable'}`,
+    });
+  }
+
+  // Test: Model-Agnostic AI Brain & Registry
+  updateTest('test_ai_brain_registry', { status: 'running' });
+  const tRegistryStart = performance.now();
+  try {
+    const defaultModel = getDefaultModel();
+    if (!defaultModel || !defaultModel.id) {
+      throw new Error('Default model resolution failed.');
+    }
+    const chain = getFallbackChain(defaultModel.id);
+    if (!chain || chain.length === 0) {
+      throw new Error('Fallback chain missing for default model.');
+    }
+    if (AVAILABLE_MODELS.length === 0) {
+      throw new Error('No models registered in Model Registry.');
+    }
+
+    const latency = Math.round(performance.now() - tRegistryStart);
+    updateTest('test_ai_brain_registry', {
+      status: 'success',
+      latencyMs: latency,
+      message: `Registry active: ${AVAILABLE_MODELS.length} models, Default: "${defaultModel.displayName}", Provider: "${defaultModel.provider}"`,
+      details: {
+        registeredCount: AVAILABLE_MODELS.length,
+        defaultModelId: defaultModel.id,
+        fallbackChain: chain,
+      },
+    });
+  } catch (err: any) {
+    updateTest('test_ai_brain_registry', {
+      status: 'failed',
+      message: `AI Brain registry check failed: ${err?.message}`,
     });
   }
 

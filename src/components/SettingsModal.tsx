@@ -28,6 +28,7 @@ import { memoryService } from '../core/memoryStore';
 import { conversationService } from '../core/conversationStore';
 import { speechService } from '../core/speechService';
 import { platformBridge } from '../core/bridge';
+import { AVAILABLE_MODELS } from '../core/ai';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -429,7 +430,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <div className="space-y-4">
                 <div>
                   <label className="block text-xs font-semibold text-slate-300 mb-1.5">
-                    Gemini AI Model
+                    Active AI Model & Architecture
                   </label>
                   <select
                     value={localSettings.ai.model}
@@ -441,8 +442,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     }
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white focus:outline-hidden focus:border-indigo-500 font-mono"
                   >
-                    <option value="gemini-3.7-flash">gemini-3.7-flash (Recommended — High intelligence + reasoning)</option>
-                    <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Ultra-low latency streaming)</option>
+                    {AVAILABLE_MODELS.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.displayName} — {m.description}
+                      </option>
+                    ))}
                   </select>
                 </div>
 
