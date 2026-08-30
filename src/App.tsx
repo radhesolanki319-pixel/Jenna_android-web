@@ -111,6 +111,51 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
+  // Android Native Integration: Hardware Back Button, Intents, and Wake-word
+  useEffect(() => {
+    // 1. Android Hardware Back Button Handler
+    const unregisterBack = platformBridge.onBackPressed(() => {
+      if (isMemoryOpen || isSettingsOpen || isDiagnosticsOpen || isMobileMenuOpen) {
+        setIsMemoryOpen(false);
+        setIsSettingsOpen(false);
+        setIsDiagnosticsOpen(false);
+        setIsMobileMenuOpen(false);
+        return true;
+      }
+      if (isStreaming) {
+        handleStopStreaming();
+        return true;
+      }
+      return false;
+    });
+
+    // 2. Android Intent Listener (text share, assistant shortcuts, deep links)
+    const unregisterIntent = platformBridge.onIntent((payload) => {
+      if (payload.text?.trim()) {
+        handleSendMessage(payload.text.trim());
+      }
+    });
+
+    // 3. Initial Intent check on mount
+    platformBridge.getInitialIntent().then((initialIntent) => {
+      if (initialIntent?.text?.trim()) {
+        handleSendMessage(initialIntent.text.trim());
+      }
+    });
+
+    // 4. Native Wake-word Trigger Listener
+    const unregisterWakeWord = platformBridge.onWakeWord(() => {
+      platformBridge.vibrate('medium');
+      platformBridge.showToast('Jenna is listening...', false);
+    });
+
+    return () => {
+      unregisterBack();
+      unregisterIntent();
+      unregisterWakeWord();
+    };
+  }, [isMemoryOpen, isSettingsOpen, isDiagnosticsOpen, isMobileMenuOpen, isStreaming]);
+
   const handleSelectConversation = async (id: string) => {
     if (isStreaming) {
       handleStopStreaming();
@@ -344,10 +389,22 @@ export default function App() {
         }
       } else {
         console.error('Chat error:', err);
+        let rawMessage = err?.message || 'Failed to generate response.';
+        if (
+          rawMessage.includes('Failed to fetch') ||
+          rawMessage.includes('NetworkError') ||
+          rawMessage.includes('fetch failed') ||
+          (typeof navigator !== 'undefined' && !navigator.onLine)
+        ) {
+          rawMessage = 'Network connection error. Please check your connection and retry.';
+        }
+        // Scrub any sensitive tokens/keys
+        const safeErrorMessage = rawMessage.replace(/AIza[0-9A-Za-z-_]{20,50}/gi, '[REDACTED_API_KEY]');
+
         await conversationService.finalizeStreamingMessage(
           assistantMsg.id,
           'error',
-          err.message || 'Failed to generate response'
+          safeErrorMessage
         );
       }
     } finally {

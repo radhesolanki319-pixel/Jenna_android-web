@@ -906,5 +906,741 @@ export class WebJennaBridge implements IJennaStorageBridge, IJennaAudioBridge {
   }
 }
 
+/**
+ * Android Native Communication Interfaces
+ */
+export interface WakeWordStatus {
+  enabled: boolean;
+  isListening: boolean;
+  keyword: string;
+}
+
+export interface AndroidIntentPayload {
+  action: string;
+  data?: string;
+  text?: string;
+  type?: string;
+  extras?: Record<string, string>;
+}
+
+export interface AndroidDeviceInfo {
+  platform: string;
+  brand: string;
+  model: string;
+  sdkVersion: number;
+  appVersion: string;
+}
+
+/**
+ * Android Native JavascriptInterface declaration
+ */
+export interface IJennaAndroidNative {
+  // Storage
+  getConversations(): string; // JSON
+  saveConversation(json: string): void;
+  deleteConversation(id: string): void;
+  getMessages(conversationId: string): string; // JSON
+  saveMessages(conversationId: string, json: string): void;
+  getMemories(): string; // JSON
+  saveMemory(json: string): void;
+  deleteMemory(id: string): void;
+  clearAllMemories(): void;
+  getUserIdentity(): string; // JSON
+  saveUserIdentity(json: string): string; // JSON
+  getSettings(): string; // JSON
+  saveSettings(json: string): void;
+
+  // Audio / Speech
+  startSpeechRecognition(lang: string): boolean;
+  stopSpeechRecognition(): void;
+  speakNativeTTS(text: string, rate: number, pitch: number): void;
+  stopTTS(): void;
+  playBase64Audio(base64Data: string, mimeType: string): boolean;
+  stopAudio(): void;
+
+  // Wake-word Status & Control
+  getWakeWordStatus(): string; // JSON
+  setWakeWordEnabled(enabled: boolean): void;
+
+  // Back Button & Navigation
+  setBackIntercepted(intercepted: boolean): void;
+  exitApp(): void;
+
+  // Intent Routing & Sharing
+  getInitialIntent(): string; // JSON
+  openExternalUrl(url: string): boolean;
+  shareText(text: string, title?: string): boolean;
+
+  // System
+  vibrate(patternType: string): void;
+  showToast(message: string, isLong?: boolean): void;
+  getDeviceInfo(): string; // JSON
+}
+
+/**
+ * Android implementation of the Jenna Platform Bridge.
+ * Interfaces directly with Kotlin WebView JavascriptInterface (`window.JennaAndroid`).
+ */
+export class AndroidJennaBridge implements IJennaStorageBridge, IJennaAudioBridge {
+  private webFallback = new WebJennaBridge();
+  private backPressHandlers: Array<() => boolean> = [];
+  private wakeWordListeners: Array<(keyword: string) => void> = [];
+  private intentListeners: Array<(intent: AndroidIntentPayload) => void> = [];
+
+  constructor() {
+    this.setupWindowListeners();
+  }
+
+  private setupWindowListeners(): void {
+    if (typeof window === 'undefined') return;
+
+    // Native Activity back button event
+    (window as any).__onJennaAndroidBackPressed = (): boolean => {
+      // Execute handlers in LIFO order (most recent modal/handler first)
+      for (let i = this.backPressHandlers.length - 1; i >= 0; i--) {
+        const handled = this.backPressHandlers[i]();
+        if (handled) return true;
+      }
+      return false;
+    };
+
+    // Native Wake-word detection event
+    (window as any).__onJennaAndroidWakeWordDetected = (keyword = 'Hey Jenna') => {
+      this.wakeWordListeners.forEach((fn) => fn(keyword));
+    };
+
+    // Native Android Intent event
+    (window as any).__onJennaAndroidIntent = (intentRaw: string | AndroidIntentPayload) => {
+      try {
+        const payload: AndroidIntentPayload =
+          typeof intentRaw === 'string' ? JSON.parse(intentRaw) : intentRaw;
+        this.intentListeners.forEach((fn) => fn(payload));
+      } catch (err) {
+        console.warn('[Jenna Android Bridge] Error parsing incoming intent:', err);
+      }
+    };
+  }
+
+  private get native(): IJennaAndroidNative | null {
+    if (typeof window !== 'undefined') {
+      return (window as any).JennaAndroid || (window as any).Android || null;
+    }
+    return null;
+  }
+
+  isAvailable(): boolean {
+    return Boolean(this.native);
+  }
+
+  getCapabilities(): JennaPlatformCapabilities {
+    if (!this.isAvailable()) {
+      return this.webFallback.getCapabilities();
+    }
+    return {
+      platform: 'android',
+      hasMicrophone: true,
+      hasSpeechRecognition: true,
+      hasSpeechSynthesis: true,
+      hasNativeAudioEngine: true,
+      isOnline: typeof navigator !== 'undefined' ? navigator.onLine : true,
+      storageType: 'room_sqlite',
+    };
+  }
+
+  // Storage Implementations delegating to Kotlin Room Database
+  async getConversations(): Promise<Conversation[]> {
+    if (this.native) {
+      try {
+        const raw = this.native.getConversations();
+        if (raw) return JSON.parse(raw);
+      } catch (err) {
+        console.warn('[Jenna Android Bridge] Error fetching conversations from Room DB:', err);
+      }
+    }
+    return this.webFallback.getConversations();
+  }
+
+  async saveConversation(conv: Conversation): Promise<void> {
+    if (this.native) {
+      try {
+        this.native.saveConversation(JSON.stringify(conv));
+        return;
+      } catch (err) {
+        console.warn('[Jenna Android Bridge] Error saving conversation to Room DB:', err);
+      }
+    }
+    return this.webFallback.saveConversation(conv);
+  }
+
+  async deleteConversation(id: string): Promise<void> {
+    if (this.native) {
+      try {
+        this.native.deleteConversation(id);
+        return;
+      } catch (err) {
+        console.warn('[Jenna Android Bridge] Error deleting conversation:', err);
+      }
+    }
+    return this.webFallback.deleteConversation(id);
+  }
+
+  async getMessages(conversationId: string): Promise<Message[]> {
+    if (this.native) {
+      try {
+        const raw = this.native.getMessages(conversationId);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            return parsed
+              .filter((m) => m && typeof m === 'object' && typeof m.id === 'string' && typeof m.content === 'string')
+              .map((m) => {
+                if (m.status === 'streaming') {
+                  return {
+                    ...m,
+                    status: m.content.trim() ? 'complete' : 'error',
+                    error: m.content.trim() ? undefined : 'Generation was interrupted.',
+                  };
+                }
+                return m;
+              });
+          }
+        }
+      } catch (err) {
+        console.warn('[Jenna Android Bridge] Error fetching messages:', err);
+      }
+    }
+    return this.webFallback.getMessages(conversationId);
+  }
+
+  async saveMessages(conversationId: string, messages: Message[]): Promise<void> {
+    if (this.native) {
+      try {
+        this.native.saveMessages(conversationId, JSON.stringify(messages));
+        return;
+      } catch (err) {
+        console.warn('[Jenna Android Bridge] Error saving messages:', err);
+      }
+    }
+    return this.webFallback.saveMessages(conversationId, messages);
+  }
+
+  async getMemories(): Promise<MemoryItem[]> {
+    if (this.native) {
+      try {
+        const raw = this.native.getMemories();
+        if (raw) return JSON.parse(raw);
+      } catch (err) {
+        console.warn('[Jenna Android Bridge] Error fetching memories from Room DB:', err);
+      }
+    }
+    return this.webFallback.getMemories();
+  }
+
+  async saveMemory(item: MemoryItem): Promise<void> {
+    if (this.native) {
+      try {
+        this.native.saveMemory(JSON.stringify(item));
+        return;
+      } catch (err) {
+        console.warn('[Jenna Android Bridge] Error saving memory to Room DB:', err);
+      }
+    }
+    return this.webFallback.saveMemory(item);
+  }
+
+  async deleteMemory(id: string): Promise<void> {
+    if (this.native) {
+      try {
+        this.native.deleteMemory(id);
+        return;
+      } catch (err) {
+        console.warn('[Jenna Android Bridge] Error deleting memory:', err);
+      }
+    }
+    return this.webFallback.deleteMemory(id);
+  }
+
+  async clearAllMemories(): Promise<void> {
+    if (this.native) {
+      try {
+        this.native.clearAllMemories();
+        return;
+      } catch (err) {
+        console.warn('[Jenna Android Bridge] Error clearing memories:', err);
+      }
+    }
+    return this.webFallback.clearAllMemories();
+  }
+
+  async getUserIdentity(): Promise<UserIdentity> {
+    if (this.native) {
+      try {
+        const raw = this.native.getUserIdentity();
+        if (raw) return JSON.parse(raw);
+      } catch (err) {
+        console.warn('[Jenna Android Bridge] Error fetching user identity:', err);
+      }
+    }
+    return this.webFallback.getUserIdentity();
+  }
+
+  async saveUserIdentity(identity: Partial<UserIdentity>): Promise<UserIdentity> {
+    if (this.native) {
+      try {
+        const raw = this.native.saveUserIdentity(JSON.stringify(identity));
+        if (raw) return JSON.parse(raw);
+      } catch (err) {
+        console.warn('[Jenna Android Bridge] Error saving user identity:', err);
+      }
+    }
+    return this.webFallback.saveUserIdentity(identity);
+  }
+
+  async getSettings(): Promise<JennaSettings> {
+    if (this.native) {
+      try {
+        const raw = this.native.getSettings();
+        if (raw) return JSON.parse(raw);
+      } catch (err) {
+        console.warn('[Jenna Android Bridge] Error fetching settings:', err);
+      }
+    }
+    return this.webFallback.getSettings();
+  }
+
+  async saveSettings(settings: JennaSettings): Promise<void> {
+    if (this.native) {
+      try {
+        this.native.saveSettings(JSON.stringify(settings));
+        return;
+      } catch (err) {
+        console.warn('[Jenna Android Bridge] Error saving settings:', err);
+      }
+    }
+    return this.webFallback.saveSettings(settings);
+  }
+
+  // Audio / Speech Implementations
+  startSpeechRecognition(
+    lang: string,
+    onResult: (transcript: string, isFinal: boolean) => void,
+    onError: (error: string) => void,
+    onEnd: () => void
+  ): () => void {
+    if (this.native) {
+      try {
+        // Register window callbacks for Android native speech recognizer events
+        (window as any).__onJennaAndroidSpeechResult = (transcript: string, isFinal: boolean) => {
+          onResult(transcript, isFinal);
+        };
+        (window as any).__onJennaAndroidSpeechError = (error: string) => {
+          onError(error);
+        };
+        (window as any).__onJennaAndroidSpeechEnd = () => {
+          onEnd();
+        };
+
+        const started = this.native.startSpeechRecognition(lang || 'en-US');
+        if (started) {
+          return () => {
+            try {
+              this.native?.stopSpeechRecognition();
+            } catch {}
+          };
+        }
+      } catch (err) {
+        console.warn('[Jenna Android Bridge] Native speech recognition error, fallback to web:', err);
+      }
+    }
+
+    return this.webFallback.startSpeechRecognition(lang, onResult, onError, onEnd);
+  }
+
+  speakBrowserTTS(
+    text: string,
+    voiceURI?: string,
+    rate = 1.0,
+    pitch = 1.0,
+    onEnd?: () => void
+  ): void {
+    if (this.native) {
+      try {
+        (window as any).__onJennaAndroidTTSFinished = () => {
+          onEnd?.();
+        };
+        this.native.speakNativeTTS(text, rate, pitch);
+        return;
+      } catch (err) {
+        console.warn('[Jenna Android Bridge] Native TTS error, fallback to web:', err);
+      }
+    }
+    this.webFallback.speakBrowserTTS(text, voiceURI, rate, pitch, onEnd);
+  }
+
+  async playBase64Audio(
+    base64Data: string,
+    mimeType: string,
+    onEnd?: () => void
+  ): Promise<() => void> {
+    if (this.native) {
+      try {
+        (window as any).__onJennaAndroidAudioEnded = () => {
+          onEnd?.();
+        };
+        const started = this.native.playBase64Audio(base64Data, mimeType);
+        if (started) {
+          return () => {
+            try {
+              this.native?.stopAudio();
+            } catch {}
+          };
+        }
+      } catch (err) {
+        console.warn('[Jenna Android Bridge] Native audio playback error, fallback to web:', err);
+      }
+    }
+    return this.webFallback.playBase64Audio(base64Data, mimeType, onEnd);
+  }
+
+  unlockAudio(): { beforeState: string; afterState: string } {
+    return this.webFallback.unlockAudio();
+  }
+
+  stopAllAudio(): void {
+    if (this.native) {
+      try {
+        this.native.stopAudio();
+        this.native.stopTTS();
+      } catch {}
+    }
+    this.webFallback.stopAllAudio();
+  }
+
+  // ----------------------------------------------------
+  // Wake-Word Control & Status
+  // ----------------------------------------------------
+  async getWakeWordStatus(): Promise<WakeWordStatus> {
+    if (this.native) {
+      try {
+        const raw = this.native.getWakeWordStatus();
+        if (raw) return JSON.parse(raw);
+      } catch (err) {
+        console.warn('[Jenna Android Bridge] Error fetching wake word status:', err);
+      }
+    }
+    return { enabled: false, isListening: false, keyword: 'Hey Jenna' };
+  }
+
+  async setWakeWordEnabled(enabled: boolean): Promise<void> {
+    if (this.native) {
+      try {
+        this.native.setWakeWordEnabled(enabled);
+        return;
+      } catch (err) {
+        console.warn('[Jenna Android Bridge] Error setting wake word status:', err);
+      }
+    }
+  }
+
+  onWakeWord(callback: (keyword: string) => void): () => void {
+    this.wakeWordListeners.push(callback);
+    return () => {
+      this.wakeWordListeners = this.wakeWordListeners.filter((fn) => fn !== callback);
+    };
+  }
+
+  // ----------------------------------------------------
+  // Back Navigation & Activity Control
+  // ----------------------------------------------------
+  onBackPressed(handler: () => boolean): () => void {
+    this.backPressHandlers.push(handler);
+    this.updateNativeBackState();
+    return () => {
+      this.backPressHandlers = this.backPressHandlers.filter((h) => h !== handler);
+      this.updateNativeBackState();
+    };
+  }
+
+  private updateNativeBackState(): void {
+    if (this.native) {
+      try {
+        this.native.setBackIntercepted(this.backPressHandlers.length > 0);
+      } catch {}
+    }
+  }
+
+  triggerBackPressed(): boolean {
+    if (typeof window !== 'undefined' && (window as any).__onJennaAndroidBackPressed) {
+      return (window as any).__onJennaAndroidBackPressed();
+    }
+    return false;
+  }
+
+  exitApp(): void {
+    if (this.native) {
+      try {
+        this.native.exitApp();
+      } catch {}
+    }
+  }
+
+  // ----------------------------------------------------
+  // Intent & Deep Link Routing
+  // ----------------------------------------------------
+  async getInitialIntent(): Promise<AndroidIntentPayload | null> {
+    if (this.native) {
+      try {
+        const raw = this.native.getInitialIntent();
+        if (raw && raw !== '{}') return JSON.parse(raw);
+      } catch (err) {
+        console.warn('[Jenna Android Bridge] Error fetching initial intent:', err);
+      }
+    }
+    return null;
+  }
+
+  onIntent(callback: (intent: AndroidIntentPayload) => void): () => void {
+    this.intentListeners.push(callback);
+    return () => {
+      this.intentListeners = this.intentListeners.filter((fn) => fn !== callback);
+    };
+  }
+
+  async openExternalUrl(url: string): Promise<boolean> {
+    if (this.native) {
+      try {
+        return this.native.openExternalUrl(url);
+      } catch (err) {
+        console.warn('[Jenna Android Bridge] Error opening external URL:', err);
+      }
+    }
+    if (typeof window !== 'undefined') {
+      window.open(url, '_blank', 'noopener,noreferrer');
+      return true;
+    }
+    return false;
+  }
+
+  async shareText(text: string, title?: string): Promise<boolean> {
+    if (this.native) {
+      try {
+        return this.native.shareText(text, title);
+      } catch (err) {
+        console.warn('[Jenna Android Bridge] Error sharing text via native Android:', err);
+      }
+    }
+    if (typeof navigator !== 'undefined' && navigator.share) {
+      try {
+        await navigator.share({ title: title || 'Jenna AI Assistant', text });
+        return true;
+      } catch {}
+    }
+    return false;
+  }
+
+  // ----------------------------------------------------
+  // System & Hardware
+  // ----------------------------------------------------
+  vibrate(patternType: 'light' | 'medium' | 'heavy' | 'success' | 'warning' = 'light'): void {
+    if (this.native) {
+      try {
+        this.native.vibrate(patternType);
+      } catch {}
+    } else if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+      try {
+        navigator.vibrate(patternType === 'heavy' ? 40 : 20);
+      } catch {}
+    }
+  }
+
+  showToast(message: string, isLong = false): void {
+    if (this.native) {
+      try {
+        this.native.showToast(message, isLong);
+        return;
+      } catch {}
+    }
+    console.log(`[Jenna Toast] ${message}`);
+  }
+
+  async getDeviceInfo(): Promise<AndroidDeviceInfo> {
+    if (this.native) {
+      try {
+        const raw = this.native.getDeviceInfo();
+        if (raw) return JSON.parse(raw);
+      } catch {}
+    }
+    return {
+      platform: 'web',
+      brand: 'Browser',
+      model: typeof navigator !== 'undefined' ? navigator.userAgent : 'Unknown',
+      sdkVersion: 0,
+      appVersion: '1.0.0',
+    };
+  }
+}
+
+/**
+ * Unified Platform Bridge: Dynamically delegates to Android Native Bridge or Web Bridge.
+ */
+export class UnifiedPlatformBridge implements IJennaStorageBridge, IJennaAudioBridge {
+  private webBridge = new WebJennaBridge();
+  private androidBridge = new AndroidJennaBridge();
+
+  private get activeBridge(): IJennaStorageBridge &
+    IJennaAudioBridge & { getCapabilities: () => JennaPlatformCapabilities } {
+    if (this.androidBridge.isAvailable()) {
+      return this.androidBridge;
+    }
+    return this.webBridge;
+  }
+
+  getCapabilities(): JennaPlatformCapabilities {
+    return this.activeBridge.getCapabilities();
+  }
+
+  getConversations(): Promise<Conversation[]> {
+    return this.activeBridge.getConversations();
+  }
+
+  saveConversation(conv: Conversation): Promise<void> {
+    return this.activeBridge.saveConversation(conv);
+  }
+
+  deleteConversation(id: string): Promise<void> {
+    return this.activeBridge.deleteConversation(id);
+  }
+
+  getMessages(conversationId: string): Promise<Message[]> {
+    return this.activeBridge.getMessages(conversationId);
+  }
+
+  saveMessages(conversationId: string, messages: Message[]): Promise<void> {
+    return this.activeBridge.saveMessages(conversationId, messages);
+  }
+
+  getMemories(): Promise<MemoryItem[]> {
+    return this.activeBridge.getMemories();
+  }
+
+  saveMemory(item: MemoryItem): Promise<void> {
+    return this.activeBridge.saveMemory(item);
+  }
+
+  deleteMemory(id: string): Promise<void> {
+    return this.activeBridge.deleteMemory(id);
+  }
+
+  clearAllMemories(): Promise<void> {
+    return this.activeBridge.clearAllMemories();
+  }
+
+  getUserIdentity(): Promise<UserIdentity> {
+    return this.activeBridge.getUserIdentity();
+  }
+
+  saveUserIdentity(identity: Partial<UserIdentity>): Promise<UserIdentity> {
+    return this.activeBridge.saveUserIdentity(identity);
+  }
+
+  getSettings(): Promise<JennaSettings> {
+    return this.activeBridge.getSettings();
+  }
+
+  saveSettings(settings: JennaSettings): Promise<void> {
+    return this.activeBridge.saveSettings(settings);
+  }
+
+  startSpeechRecognition(
+    lang: string,
+    onResult: (transcript: string, isFinal: boolean) => void,
+    onError: (error: string) => void,
+    onEnd: () => void
+  ): () => void {
+    return this.activeBridge.startSpeechRecognition(lang, onResult, onError, onEnd);
+  }
+
+  speakBrowserTTS(
+    text: string,
+    voiceURI?: string,
+    rate?: number,
+    pitch?: number,
+    onEnd?: () => void
+  ): void {
+    this.activeBridge.speakBrowserTTS(text, voiceURI, rate, pitch, onEnd);
+  }
+
+  playBase64Audio(
+    base64Data: string,
+    mimeType: string,
+    onEnd?: () => void
+  ): Promise<() => void> {
+    return this.activeBridge.playBase64Audio(base64Data, mimeType, onEnd);
+  }
+
+  unlockAudio(): { beforeState: string; afterState: string } {
+    return this.webBridge.unlockAudio();
+  }
+
+  stopAllAudio(): void {
+    this.activeBridge.stopAllAudio();
+  }
+
+  vibrate(patternType?: 'light' | 'medium' | 'heavy' | 'success' | 'warning'): void {
+    this.androidBridge.vibrate(patternType);
+  }
+
+  // Wake-word methods
+  getWakeWordStatus(): Promise<WakeWordStatus> {
+    return this.androidBridge.getWakeWordStatus();
+  }
+
+  setWakeWordEnabled(enabled: boolean): Promise<void> {
+    return this.androidBridge.setWakeWordEnabled(enabled);
+  }
+
+  onWakeWord(callback: (keyword: string) => void): () => void {
+    return this.androidBridge.onWakeWord(callback);
+  }
+
+  // Back navigation handlers
+  onBackPressed(handler: () => boolean): () => void {
+    return this.androidBridge.onBackPressed(handler);
+  }
+
+  triggerBackPressed(): boolean {
+    return this.androidBridge.triggerBackPressed();
+  }
+
+  exitApp(): void {
+    this.androidBridge.exitApp();
+  }
+
+  // Intent routing
+  getInitialIntent(): Promise<AndroidIntentPayload | null> {
+    return this.androidBridge.getInitialIntent();
+  }
+
+  onIntent(callback: (intent: AndroidIntentPayload) => void): () => void {
+    return this.androidBridge.onIntent(callback);
+  }
+
+  openExternalUrl(url: string): Promise<boolean> {
+    return this.androidBridge.openExternalUrl(url);
+  }
+
+  shareText(text: string, title?: string): Promise<boolean> {
+    return this.androidBridge.shareText(text, title);
+  }
+
+  showToast(message: string, isLong = false): void {
+    this.androidBridge.showToast(message, isLong);
+  }
+
+  getDeviceInfo(): Promise<AndroidDeviceInfo> {
+    return this.androidBridge.getDeviceInfo();
+  }
+}
+
 // Global Singleton Bridge Instance
-export const platformBridge = new WebJennaBridge();
+export const platformBridge = new UnifiedPlatformBridge();

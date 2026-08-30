@@ -51,7 +51,12 @@ export class GeminiProvider implements AIProvider {
     }
 
     const status = err?.status || err?.code || err?.statusCode;
-    const msg = (err?.message || String(err)).toLowerCase();
+    let rawMsg = (err?.message || String(err || 'Unknown error'));
+
+    // Scrub any potential API keys or sensitive credential patterns
+    rawMsg = rawMsg.replace(/AIza[0-9A-Za-z-_]{20,50}/gi, '[REDACTED_API_KEY]');
+
+    const msg = rawMsg.toLowerCase();
 
     const isRetryable =
       status === 503 ||
@@ -64,13 +69,27 @@ export class GeminiProvider implements AIProvider {
       msg.includes('high demand') ||
       msg.includes('resource_exhausted') ||
       msg.includes('rate limit') ||
+      msg.includes('rate_limit') ||
       msg.includes('overloaded') ||
-      msg.includes('temporarily unavailable');
+      msg.includes('temporarily unavailable') ||
+      msg.includes('econnreset') ||
+      msg.includes('etimedout') ||
+      msg.includes('timeout') ||
+      msg.includes('fetch failed');
 
-    let userFriendlyMessage = err?.message || 'Gemini generation failed.';
+    let userFriendlyMessage = rawMsg || 'Gemini generation failed.';
     if (isRetryable) {
       userFriendlyMessage =
         'Jenna is currently experiencing high demand. Please retry in a moment.';
+    } else if (
+      status === 401 ||
+      status === 403 ||
+      msg.includes('api_key') ||
+      msg.includes('unauthenticated') ||
+      msg.includes('permission_denied')
+    ) {
+      userFriendlyMessage =
+        'AI service authentication failed. Please check your API key configuration.';
     }
 
     return new AIProviderError(userFriendlyMessage, 'gemini', {

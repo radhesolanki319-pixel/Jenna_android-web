@@ -219,7 +219,11 @@ export class JennaConversationService {
     if (!msg || !this.activeConversationId) return;
 
     msg.status = status;
-    if (errorMsg) msg.error = errorMsg;
+    if (status === 'error') {
+      msg.error = errorMsg || 'An error occurred during generation.';
+    } else if (status === 'complete') {
+      delete msg.error;
+    }
 
     await platformBridge.saveMessages(this.activeConversationId, this.currentMessages);
 
@@ -227,7 +231,7 @@ export class JennaConversationService {
     const conv = this.conversations.find((c) => c.id === this.activeConversationId);
     if (conv) {
       conv.updatedAt = Date.now();
-      conv.previewText = msg.content.slice(0, 80) || 'Response received';
+      conv.previewText = msg.content.slice(0, 80) || (status === 'error' ? 'Error occurred' : 'Response received');
       await platformBridge.saveConversation(conv);
     }
 

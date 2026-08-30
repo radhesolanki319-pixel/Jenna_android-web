@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Jenna</string>
+    <string name="mic_permission_rationale">Jenna requires microphone access for voice conversations and speech recognition.</string>
+</resources>
