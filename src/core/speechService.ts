@@ -157,6 +157,8 @@ export class JennaSpeechService {
             }
           );
           return;
+        } else if (data.fallback) {
+          console.log(`[Jenna Voice] ℹ️ Neural TTS server signaled fallback: ${data.error || 'Defaulting to browser speech synthesis.'}`);
         } else {
           throw new Error(data.error || 'No audio data returned by Neural TTS service');
         }
@@ -167,7 +169,7 @@ export class JennaSpeechService {
 
     // Browser Speech Synthesis Fallback / Native Mode
     try {
-      console.log(`[Jenna Voice] 🗣️ Using Browser SpeechSynthesis engine for message "${messageId}" (${text.length} chars, rate: ${rate}, pitch: ${pitch})...`);
+      console.log(`[Jenna Voice] 🗣️ Using Browser SpeechSynthesis engine for message "${messageId}" (${text.length} chars, rate: ${rate}, pitch: ${pitch}, voiceURI: "${browserVoiceURI || 'system default'}")...`);
       this.playbackState = 'playing';
       this.notify();
 

@@ -53,10 +53,17 @@ export interface MemoryItem {
 }
 
 export interface UserProfile {
+  id?: string;
   name: string;
+  handle?: string;
   preferredTone: 'warm_conversational' | 'direct_concise' | 'creative_intuitive' | 'analytical_deep';
   customInstructions: string;
+  createdAt?: number;
+  lastActiveAt?: number;
+  authType?: 'local_device' | 'anonymous' | 'passkey';
 }
+
+export type UserIdentity = UserProfile;
 
 export interface JennaSettings {
   profile: UserProfile;

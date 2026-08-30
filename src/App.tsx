@@ -13,6 +13,7 @@ import { conversationService } from './core/conversationStore';
 import { memoryService } from './core/memoryStore';
 import { settingsService } from './core/settingsStore';
 import { speechService } from './core/speechService';
+import { platformBridge } from './core/bridge';
 import { Conversation, Message, JennaSettings } from './types';
 import { Smartphone, Monitor } from 'lucide-react';
 
@@ -153,6 +154,10 @@ export default function App() {
   const handleSendMessage = async (content: string, isRetry = false) => {
     const activeConvId = conversationService.getActiveConversationId();
     if (!activeConvId || isStreaming) return;
+
+    // Direct user-gesture activation: Unlock AudioContext and prime speech synthesis early
+    const audioState = platformBridge.unlockAudio();
+    console.log('[Jenna Audio] 🔓 AudioContext unlocked on user message send. State:', audioState);
 
     // Stop any active audio playback before starting new turn
     speechService.stopPlayback();
@@ -306,7 +311,9 @@ export default function App() {
       await conversationService.finalizeStreamingMessage(assistantMsg.id, 'complete');
 
       // Auto-play TTS if enabled in user settings
+      console.log(`[Jenna Auto-TTS] 🔍 Checking Auto-TTS conditions: autoPlayTTS=${settings.voice.autoPlayTTS}, textLength=${fullAssistantText.trim().length}`);
       if (settings.voice.autoPlayTTS && fullAssistantText.trim()) {
+        console.log(`[Jenna Auto-TTS] 🚀 Triggering automatic speech synthesis for message "${assistantMsg.id}" (${fullAssistantText.trim().length} chars, engine: ${settings.voice.ttsEngine})`);
         speechService.speak(assistantMsg.id, {
           text: fullAssistantText,
           engine: settings.voice.ttsEngine,
@@ -314,7 +321,15 @@ export default function App() {
           browserVoiceURI: settings.voice.browserVoiceURI,
           rate: settings.voice.speechRate,
           pitch: settings.voice.speechPitch,
+          onSuccess: () => {
+            console.log(`[Jenna Auto-TTS] ✅ Auto-TTS playback completed for message "${assistantMsg.id}".`);
+          },
+          onError: (err) => {
+            console.warn(`[Jenna Auto-TTS] ❌ Auto-TTS playback reported error for message "${assistantMsg.id}":`, err);
+          },
         });
+      } else if (!settings.voice.autoPlayTTS) {
+        console.log('[Jenna Auto-TTS] ⏸️ Auto-TTS is disabled in settings, skipping voice playback.');
       }
     } catch (err: any) {
       if (err.name === 'AbortError') {

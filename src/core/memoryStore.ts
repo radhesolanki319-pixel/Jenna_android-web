@@ -56,7 +56,7 @@ export class JennaMemoryService {
   }
 
   async load(): Promise<MemoryItem[]> {
-    if (this.isLoaded && this.memoriesCache.length > 0) {
+    if (this.isLoaded) {
       return this.memoriesCache;
     }
     this.memoriesCache = await platformBridge.getMemories();
@@ -81,6 +81,33 @@ export class JennaMemoryService {
     sourceConversationId?: string
   ): Promise<MemoryItem> {
     const text = content.trim();
+    if (!text) {
+      throw new Error('Memory content cannot be empty');
+    }
+
+    // Prevent duplicate facts by checking existing cache (case-insensitive)
+    const existingIndex = this.memoriesCache.findIndex(
+      (m) => (m.content || m.fact || '').trim().toLowerCase() === text.toLowerCase()
+    );
+
+    if (existingIndex >= 0) {
+      const existing = this.memoriesCache[existingIndex];
+      const updated: MemoryItem = {
+        ...existing,
+        category,
+        priority,
+        isPinned: priority === 'high',
+        confidence: Math.max(existing.confidence || 0, confidence),
+        sourceConversationId: sourceConversationId || existing.sourceConversationId,
+        enabled: true,
+        updatedAt: Date.now(),
+      };
+      await platformBridge.saveMemory(updated);
+      this.memoriesCache[existingIndex] = updated;
+      this.notify();
+      return updated;
+    }
+
     const newMemory: MemoryItem = {
       id: `mem_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
       category,

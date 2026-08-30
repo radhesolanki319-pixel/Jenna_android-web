@@ -4,7 +4,7 @@
  * This guarantees total parity of Jenna's identity, storage, and audio handling across platforms.
  */
 
-import { Conversation, Message, MemoryItem, MemoryCategory, MemoryPriority, JennaSettings } from '../types';
+import { Conversation, Message, MemoryItem, MemoryCategory, MemoryPriority, JennaSettings, UserProfile, UserIdentity } from '../types';
 
 export interface JennaPlatformCapabilities {
   platform: 'web' | 'android';
@@ -28,6 +28,9 @@ export interface IJennaStorageBridge {
   deleteMemory(id: string): Promise<void>;
   clearAllMemories(): Promise<void>;
   
+  getUserIdentity(): Promise<UserIdentity>;
+  saveUserIdentity(identity: Partial<UserIdentity>): Promise<UserIdentity>;
+
   getSettings(): Promise<JennaSettings>;
   saveSettings(settings: JennaSettings): Promise<void>;
 }
@@ -247,7 +250,7 @@ export class WebJennaBridge implements IJennaStorageBridge, IJennaAudioBridge {
   async getMemories(): Promise<MemoryItem[]> {
     try {
       const data = localStorage.getItem('jenna_memories_v1');
-      if (data) {
+      if (data !== null) {
         const parsed = JSON.parse(data);
         if (Array.isArray(parsed)) {
           return parsed
@@ -280,7 +283,7 @@ export class WebJennaBridge implements IJennaStorageBridge, IJennaAudioBridge {
             });
         }
       }
-      // Initial default starter memories to establish the foundation
+      // Initial default starter memories to establish the foundation on first run
       const initialMemories: MemoryItem[] = [
         {
           id: 'mem_starter_1',
@@ -341,19 +344,121 @@ export class WebJennaBridge implements IJennaStorageBridge, IJennaAudioBridge {
 
   async clearAllMemories(): Promise<void> {
     try {
-      localStorage.removeItem('jenna_memories_v1');
+      localStorage.setItem('jenna_memories_v1', JSON.stringify([]));
     } catch (err) {
       console.error('[Jenna Bridge] Failed to clear memories:', err);
     }
+  }
+
+  // User Identity & Session Storage
+  async getUserIdentity(): Promise<UserIdentity> {
+    try {
+      const storedIdentity = localStorage.getItem('jenna_user_identity_v1');
+      if (storedIdentity) {
+        const parsed = JSON.parse(storedIdentity);
+        if (parsed && typeof parsed === 'object' && parsed.id) {
+          return {
+            id: parsed.id,
+            name: parsed.name || 'User',
+            handle: parsed.handle || '@user',
+            preferredTone: parsed.preferredTone || 'warm_conversational',
+            customInstructions: parsed.customInstructions || '',
+            createdAt: parsed.createdAt || Date.now(),
+            lastActiveAt: Date.now(),
+            authType: parsed.authType || 'local_device',
+          };
+        }
+      }
+
+      // Check existing settings profile for backward compatibility
+      const settings = await this.getSettings();
+      if (settings.profile?.id) {
+        const identity: UserIdentity = {
+          id: settings.profile.id,
+          name: settings.profile.name || 'User',
+          handle: settings.profile.handle || '@user',
+          preferredTone: settings.profile.preferredTone || 'warm_conversational',
+          customInstructions: settings.profile.customInstructions || '',
+          createdAt: settings.profile.createdAt || Date.now(),
+          lastActiveAt: Date.now(),
+          authType: settings.profile.authType || 'local_device',
+        };
+        localStorage.setItem('jenna_user_identity_v1', JSON.stringify(identity));
+        return identity;
+      }
+
+      // Generate a fresh persistent user identity
+      const newId = `usr_${Math.random().toString(36).substring(2, 9)}_${Date.now().toString(36)}`;
+      const newIdentity: UserIdentity = {
+        id: newId,
+        name: settings.profile?.name || 'User',
+        handle: `@${(settings.profile?.name || 'user').toLowerCase().replace(/\s+/g, '_')}`,
+        preferredTone: settings.profile?.preferredTone || 'warm_conversational',
+        customInstructions: settings.profile?.customInstructions || '',
+        createdAt: Date.now(),
+        lastActiveAt: Date.now(),
+        authType: 'local_device',
+      };
+
+      localStorage.setItem('jenna_user_identity_v1', JSON.stringify(newIdentity));
+      return newIdentity;
+    } catch {
+      return {
+        id: 'usr_local_default',
+        name: 'User',
+        handle: '@user',
+        preferredTone: 'warm_conversational',
+        customInstructions: '',
+        createdAt: Date.now(),
+        lastActiveAt: Date.now(),
+        authType: 'local_device',
+      };
+    }
+  }
+
+  async saveUserIdentity(partial: Partial<UserIdentity>): Promise<UserIdentity> {
+    const current = await this.getUserIdentity();
+    const updated: UserIdentity = {
+      ...current,
+      ...partial,
+      lastActiveAt: Date.now(),
+    };
+    try {
+      localStorage.setItem('jenna_user_identity_v1', JSON.stringify(updated));
+      // Keep settings.profile in sync
+      const settings = await this.getSettings();
+      await this.saveSettings({
+        ...settings,
+        profile: {
+          ...settings.profile,
+          id: updated.id,
+          name: updated.name,
+          handle: updated.handle,
+          preferredTone: updated.preferredTone,
+          customInstructions: updated.customInstructions,
+          createdAt: updated.createdAt,
+          lastActiveAt: updated.lastActiveAt,
+          authType: updated.authType,
+        },
+      });
+    } catch (err) {
+      console.error('[Jenna Bridge] Failed to save user identity:', err);
+    }
+    return updated;
   }
 
   // Settings Storage
   async getSettings(): Promise<JennaSettings> {
     const defaultSettings: JennaSettings = {
       profile: {
+        id: 'usr_local_default',
         name: 'User',
+        handle: '@user',
         preferredTone: 'warm_conversational',
         customInstructions: '',
+        createdAt: Date.now(),
+        lastActiveAt: Date.now(),
+        authType: 'local_device',
       },
       ai: {
         model: 'gemini-3.7-flash',
@@ -389,10 +494,28 @@ export class WebJennaBridge implements IJennaStorageBridge, IJennaAudioBridge {
       const data = localStorage.getItem('jenna_settings_v1');
       if (data) {
         const parsed = JSON.parse(data);
+        const mergedProfile = { ...defaultSettings.profile, ...(parsed.profile || {}) };
+        if (!mergedProfile.id || mergedProfile.id === 'usr_local_default') {
+          // Check if identity is in user identity store
+          const storedIdentity = localStorage.getItem('jenna_user_identity_v1');
+          if (storedIdentity) {
+            try {
+              const idData = JSON.parse(storedIdentity);
+              if (idData.id) {
+                mergedProfile.id = idData.id;
+                mergedProfile.createdAt = idData.createdAt || mergedProfile.createdAt;
+                mergedProfile.handle = idData.handle || mergedProfile.handle;
+              }
+            } catch {
+              // ignore
+            }
+          }
+        }
+
         return {
           ...defaultSettings,
           ...parsed,
-          profile: { ...defaultSettings.profile, ...(parsed.profile || {}) },
+          profile: mergedProfile,
           ai: { ...defaultSettings.ai, ...(parsed.ai || {}) },
           memory: { ...defaultSettings.memory, ...(parsed.memory || {}) },
           voice: {
@@ -411,7 +534,14 @@ export class WebJennaBridge implements IJennaStorageBridge, IJennaAudioBridge {
   }
 
   async saveSettings(settings: JennaSettings): Promise<void> {
-    localStorage.setItem('jenna_settings_v1', JSON.stringify(settings));
+    try {
+      localStorage.setItem('jenna_settings_v1', JSON.stringify(settings));
+      if (settings.profile) {
+        localStorage.setItem('jenna_user_identity_v1', JSON.stringify(settings.profile));
+      }
+    } catch (err) {
+      console.error('[Jenna Bridge] Failed to save settings:', err);
+    }
   }
 
   // Audio & Speech
@@ -497,11 +627,23 @@ export class WebJennaBridge implements IJennaStorageBridge, IJennaAudioBridge {
           if (this.sharedAudioContext.state === 'suspended') {
             this.sharedAudioContext.resume().catch(() => {});
           }
+          // Play 1-sample silent buffer during user gesture to completely unlock Web Audio API hardware across mobile/desktop
+          try {
+            const buffer = this.sharedAudioContext.createBuffer(1, 1, 22050);
+            const source = this.sharedAudioContext.createBufferSource();
+            source.buffer = buffer;
+            source.connect(this.sharedAudioContext.destination);
+            source.start(0);
+          } catch {}
         }
         if ('speechSynthesis' in window) {
-          if (window.speechSynthesis.paused) {
-            window.speechSynthesis.resume();
-          }
+          try {
+            if (window.speechSynthesis.paused) {
+              window.speechSynthesis.resume();
+            }
+            // Prime voices list
+            window.speechSynthesis.getVoices();
+          } catch {}
         }
       }
     } catch {}
@@ -523,13 +665,15 @@ export class WebJennaBridge implements IJennaStorageBridge, IJennaAudioBridge {
     }
 
     try {
-      if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
-        window.speechSynthesis.cancel();
-      }
-
+      // Unpause if in paused state
       if (window.speechSynthesis.paused) {
         window.speechSynthesis.resume();
       }
+
+      // Cancel previous speech to prevent queue stacking
+      try {
+        window.speechSynthesis.cancel();
+      } catch {}
 
       const clean = text
         .replace(/[*_#`[\]()]/g, ' ')
@@ -538,33 +682,63 @@ export class WebJennaBridge implements IJennaStorageBridge, IJennaAudioBridge {
         .trim();
 
       if (!clean) {
+        console.log('[Jenna Bridge] ⚠️ Cleaned text for SpeechSynthesis is empty, skipping.');
         onEnd?.();
         return;
       }
 
       const utterance = new SpeechSynthesisUtterance(clean);
+      utterance.volume = 1.0;
       utterance.rate = Math.max(0.5, Math.min(2.0, rate));
       utterance.pitch = Math.max(0.5, Math.min(2.0, pitch));
 
+      const voices = window.speechSynthesis.getVoices();
       if (voiceURI) {
-        const voices = window.speechSynthesis.getVoices();
         const match = voices.find((v) => v.voiceURI === voiceURI);
-        if (match) utterance.voice = match;
+        if (match) {
+          utterance.voice = match;
+          utterance.lang = match.lang;
+        }
       }
+
+      if (!utterance.voice && voices.length > 0) {
+        // Find default english voice or first available
+        const defaultVoice = voices.find((v) => v.lang.startsWith('en') && v.default) ||
+          voices.find((v) => v.lang.startsWith('en')) ||
+          voices[0];
+        if (defaultVoice) {
+          utterance.voice = defaultVoice;
+          utterance.lang = defaultVoice.lang;
+        }
+      }
+
+      if (!utterance.lang) {
+        utterance.lang = 'en-US';
+      }
+
+      // GC Protection: Keep active utterance referenced on window to prevent garbage collection mid-speech
+      (window as any).__jenna_active_utterance = utterance;
+      this.activeUtterance = utterance;
 
       let ended = false;
       const handleEnd = (status: 'ended' | 'error') => {
         if (ended) return;
         ended = true;
+        (window as any).__jenna_active_utterance = null;
         if (this.activeUtterance === utterance) {
           this.activeUtterance = null;
         }
         if (status === 'error') {
           console.warn('[Jenna Bridge] SpeechSynthesis utterance ended with error or was interrupted.');
+        } else {
+          console.log('[Jenna Bridge] 🏁 SpeechSynthesis utterance audio playback completed.');
         }
         onEnd?.();
       };
 
+      utterance.onstart = () => {
+        console.log(`[Jenna Bridge] 🔊 SpeechSynthesis audio output started (voice: "${utterance.voice?.name || 'default'}", lang: "${utterance.lang}")`);
+      };
       utterance.onend = () => handleEnd('ended');
       utterance.onerror = (e) => {
         if (e.error !== 'interrupted' && e.error !== 'canceled') {
@@ -573,22 +747,15 @@ export class WebJennaBridge implements IJennaStorageBridge, IJennaAudioBridge {
         handleEnd('error');
       };
 
-      this.activeUtterance = utterance;
+      console.log(`[Jenna Bridge] 🗣️ Calling window.speechSynthesis.speak() for text: "${clean.slice(0, 40)}..."`);
+      window.speechSynthesis.speak(utterance);
 
-      // Small delay prevents Chromium cancel/speak race condition
-      setTimeout(() => {
-        try {
-          window.speechSynthesis.speak(utterance);
-          if (window.speechSynthesis.paused) {
-            window.speechSynthesis.resume();
-          }
-        } catch (speakErr) {
-          console.warn('[Jenna Bridge] Failed to execute window.speechSynthesis.speak:', speakErr);
-          handleEnd('error');
-        }
-      }, 20);
+      if (window.speechSynthesis.paused) {
+        window.speechSynthesis.resume();
+      }
     } catch (err) {
       console.warn('[Jenna Bridge] Browser TTS failed to start:', err);
+      (window as any).__jenna_active_utterance = null;
       this.activeUtterance = null;
       onEnd?.();
     }

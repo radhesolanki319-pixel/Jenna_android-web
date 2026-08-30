@@ -314,6 +314,28 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* Persistent Bottom Hub */}
       <div className="p-2 border-t border-slate-800/80 bg-slate-950/40 space-y-1">
+        {/* User Identity & Session Pill */}
+        <button
+          id="btn-user-profile-hub"
+          onClick={onOpenSettings}
+          className="w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-xs text-slate-300 hover:bg-slate-800/70 hover:text-white transition-colors group border border-slate-800/60 bg-slate-900/40 mb-1"
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-6 h-6 rounded-lg bg-indigo-600/25 text-indigo-300 border border-indigo-500/30 flex items-center justify-center font-bold text-[11px] shrink-0">
+              {(settings.profile?.name || 'U').charAt(0).toUpperCase()}
+            </div>
+            <div className="text-left truncate min-w-0">
+              <div className="font-semibold text-slate-200 text-xs truncate">
+                {settings.profile?.name || 'User'}
+              </div>
+              <div className="text-[10px] text-slate-400 truncate font-mono">
+                {settings.profile?.handle || '@user'}
+              </div>
+            </div>
+          </div>
+          <span className="w-2 h-2 rounded-full bg-emerald-400 ring-2 ring-emerald-950 shrink-0" title="Active Local Session" />
+        </button>
+
         {/* Long-Term Memory Hub Button */}
         <button
           id="btn-memory-hub"

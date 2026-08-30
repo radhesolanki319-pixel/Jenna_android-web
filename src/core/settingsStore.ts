@@ -3,7 +3,7 @@
  * Persistent settings for Jenna persona, AI parameters, voice engine, appearance, and platform simulation.
  */
 
-import { JennaSettings } from '../types';
+import { JennaSettings, UserProfile, UserIdentity } from '../types';
 import { platformBridge } from './bridge';
 
 export class JennaSettingsService {
@@ -38,9 +38,14 @@ export class JennaSettingsService {
       // Fallback defaults
       return {
         profile: {
+          id: 'usr_local_default',
           name: 'User',
+          handle: '@user',
           preferredTone: 'warm_conversational',
           customInstructions: '',
+          createdAt: Date.now(),
+          lastActiveAt: Date.now(),
+          authType: 'local_device',
         },
         ai: {
           model: 'gemini-3.7-flash',
@@ -73,6 +78,21 @@ export class JennaSettingsService {
       };
     }
     return this.settings;
+  }
+
+  getUserIdentity(): UserIdentity {
+    return this.get().profile;
+  }
+
+  async updateUserIdentity(partial: Partial<UserIdentity>): Promise<void> {
+    const current = this.get();
+    const updatedProfile: UserProfile = {
+      ...current.profile,
+      ...partial,
+      lastActiveAt: Date.now(),
+    };
+    await this.update({ profile: updatedProfile });
+    await platformBridge.saveUserIdentity(updatedProfile);
   }
 
   async update(partial: Partial<JennaSettings>): Promise<void> {
