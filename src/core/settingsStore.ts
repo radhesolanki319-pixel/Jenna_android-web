@@ -6,6 +6,11 @@
 import { JennaSettings, UserProfile, UserIdentity } from '../types';
 import { platformBridge } from './bridge';
 
+// Jenna's original Phase 2 model configuration is intentionally locked.
+// The chat server already owns the same fallback chain:
+// gemini-3.7-flash -> gemini-3.1-flash-lite -> gemini-flash-latest
+const LOCKED_JENNA_MODEL = 'gemini-3.7-flash';
+
 export class JennaSettingsService {
   private settings: JennaSettings | null = null;
   private isLoaded = false;
@@ -26,8 +31,27 @@ export class JennaSettingsService {
     if (this.isLoaded && this.settings) {
       return this.settings;
     }
-    this.settings = await platformBridge.getSettings();
+
+    const loadedSettings = await platformBridge.getSettings();
+    const loadedModel = loadedSettings.ai?.model;
+
+    // Normalize any stale/foreign model selection back to Jenna's locked model.
+    this.settings = {
+      ...loadedSettings,
+      ai: {
+        ...loadedSettings.ai,
+        model: LOCKED_JENNA_MODEL,
+      },
+    };
+
     this.isLoaded = true;
+
+    // Persist the correction so an old Gemini 2.x or other model value cannot
+    // return after a reload.
+    if (loadedModel !== LOCKED_JENNA_MODEL) {
+      await platformBridge.saveSettings(this.settings);
+    }
+
     this.applyTheme(this.settings);
     this.notify();
     return this.settings;
@@ -48,7 +72,7 @@ export class JennaSettingsService {
           authType: 'local_device',
         },
         ai: {
-          model: 'gemini-3.7-flash',
+          model: LOCKED_JENNA_MODEL,
           temperature: 0.7,
           enableThinking: true,
           streamResponses: true,
@@ -101,7 +125,12 @@ export class JennaSettingsService {
       ...current,
       ...partial,
       profile: { ...current.profile, ...(partial.profile || {}) },
-      ai: { ...current.ai, ...(partial.ai || {}) },
+      // Hard-lock the model regardless of what the UI or persisted settings request.
+      ai: {
+        ...current.ai,
+        ...(partial.ai || {}),
+        model: LOCKED_JENNA_MODEL,
+      },
       memory: { ...current.memory, ...(partial.memory || {}) },
       voice: { ...current.voice, ...(partial.voice || {}) },
       appearance: { ...current.appearance, ...(partial.appearance || {}) },
