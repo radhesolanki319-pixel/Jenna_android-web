@@ -1,0 +1,11 @@
+{
+  "name": "Jenna",
+  "description": "A modern, intelligent personal AI assistant built for Web and Android with persistent memory, streaming, STT, and TTS.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
+
