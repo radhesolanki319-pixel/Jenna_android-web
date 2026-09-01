@@ -41,6 +41,8 @@ interface ChatViewProps {
   onOpenSettings: () => void;
   onUpdateSettings?: (updates: Partial<JennaSettings>) => Promise<void>;
   settings: JennaSettings;
+  /** False when neither the browser nor the server has a Gemini API key connected. */
+  isAiConfigured?: boolean;
 }
 
 export const ChatView: React.FC<ChatViewProps> = ({
@@ -55,6 +57,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onOpenSettings,
   onUpdateSettings,
   settings,
+  isAiConfigured = true,
 }) => {
   const [inputText, setInputText] = useState('');
   const [isListening, setIsListening] = useState(false);
@@ -321,9 +324,34 @@ export const ChatView: React.FC<ChatViewProps> = ({
             <h2 className="text-2xl sm:text-3xl font-bold text-white tracking-tight mb-2">
               Hello {settings.profile.name || 'there'}, I'm Jenna
             </h2>
-            <p className="text-slate-400 text-sm sm:text-base max-w-md mb-8 leading-relaxed">
+            <p className="text-slate-400 text-sm sm:text-base max-w-md mb-4 leading-relaxed">
               Your personal AI assistant built for Web and Android. Powered by real-time streaming, persistent memory, and neural voice capabilities.
             </p>
+
+            {/* API Key Connect Banner */}
+            {isAiConfigured === false && (
+              <button
+                onClick={() => {
+                  onOpenSettings();
+                }}
+                className="mb-8 w-full max-w-md px-4 py-3.5 rounded-2xl bg-amber-950/40 hover:bg-amber-950/60 border border-amber-700/50 hover:border-amber-600/60 text-left transition-all duration-150 group flex items-start gap-3 cursor-pointer"
+              >
+                <AlertCircle className="w-4.5 h-4.5 text-amber-400 mt-0.5 shrink-0" />
+                <span className="flex-1">
+                  <span className="block text-xs font-semibold text-amber-200 mb-0.5">
+                    Connect your Gemini API key to activate Jenna
+                  </span>
+                  <span className="block text-[11px] text-amber-200/70 leading-relaxed">
+                    Jenna needs a Google Gemini API key to think and speak. Click here to paste
+                    yours — it stays private in your browser. Free keys are available from Google
+                    AI Studio.
+                  </span>
+                </span>
+                <Settings className="w-3.5 h-3.5 text-amber-400/60 mt-0.5 shrink-0 group-hover:text-amber-300 transition-colors" />
+              </button>
+            )}
+
+            {isAiConfigured !== false && <div className="mb-8" />}
 
             {/* Quick Starters Grid */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 w-full text-left">

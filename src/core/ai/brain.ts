@@ -77,13 +77,14 @@ export class AIBrain {
    */
   public async generateSpeech(
     text: string,
-    voice?: string
+    voice?: string,
+    apiKey?: string
   ): Promise<{ audioBase64: string; mimeType: string; voice: string }> {
     const geminiProvider = this.getProvider('gemini') as GeminiProvider;
     if (!geminiProvider.generateSpeech) {
       throw new Error('TTS Speech synthesis is not supported by current provider.');
     }
-    return geminiProvider.generateSpeech(text, voice);
+    return geminiProvider.generateSpeech(text, voice, apiKey);
   }
 }
 

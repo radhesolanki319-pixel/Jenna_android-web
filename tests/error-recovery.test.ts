@@ -70,7 +70,7 @@ describe('Phase 2 #10 — Robust Error Recovery Suite', () => {
         },
       };
 
-      (provider as any).client = mockClient;
+      (provider as any).clients.set("__anonymous__", mockClient);
 
       const result = await provider.generateStream(
         'gemini-3.7-flash',
@@ -106,7 +106,7 @@ describe('Phase 2 #10 — Robust Error Recovery Suite', () => {
         },
       };
 
-      (provider as any).client = mockClient;
+      (provider as any).clients.set("__anonymous__", mockClient);
 
       const result = await provider.generateStream(
         'gemini-3.7-flash',
@@ -136,7 +136,7 @@ describe('Phase 2 #10 — Robust Error Recovery Suite', () => {
         },
       };
 
-      (provider as any).client = mockClient;
+      (provider as any).clients.set("__anonymous__", mockClient);
 
       await expect(
         provider.generateStream(

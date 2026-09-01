@@ -20,25 +20,34 @@ export class GeminiProvider implements AIProvider {
   public readonly providerId: AIProviderId = 'gemini';
   public readonly displayName = 'Google Gemini';
 
-  private client: GoogleGenAI | null = null;
+  private clients: Map<string, GoogleGenAI> = new Map();
   private ttsQuotaCooldownUntil = 0;
 
-  private getClient(): GoogleGenAI {
-    if (!this.client) {
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) {
-        console.warn('[GeminiProvider] GEMINI_API_KEY is not set in environment.');
-      }
-      this.client = new GoogleGenAI({
-        apiKey: apiKey || '',
+  /**
+   * Returns a cached SDK client for the resolved API key.
+   * Per-request keys (bring-your-own-key) take precedence over the env var.
+   */
+  private getClient(apiKey?: string): GoogleGenAI {
+    const resolvedKey = (apiKey || process.env.GEMINI_API_KEY || '').trim();
+    if (!resolvedKey) {
+      console.warn(
+        '[GeminiProvider] No Gemini API key provided (neither request key nor GEMINI_API_KEY env).'
+      );
+    }
+    const cacheKey = resolvedKey || '__anonymous__';
+    let client = this.clients.get(cacheKey);
+    if (!client) {
+      client = new GoogleGenAI({
+        apiKey: resolvedKey,
         httpOptions: {
           headers: {
             'User-Agent': 'aistudio-build',
           },
         },
       });
+      this.clients.set(cacheKey, client);
     }
-    return this.client;
+    return client;
   }
 
   public isConfigured(): boolean {
@@ -111,7 +120,7 @@ export class GeminiProvider implements AIProvider {
     messages: AIChatMessage[],
     options: AIStreamOptions
   ): Promise<AIStreamResult> {
-    const client = this.getClient();
+    const client = this.getClient(options.apiKey);
     const candidateModels = getFallbackChain(modelId);
     const contents = this.formatContents(messages);
 
@@ -193,7 +202,7 @@ export class GeminiProvider implements AIProvider {
     messages: AIChatMessage[],
     options?: AIGenerationOptions
   ): Promise<AIGenerationResult> {
-    const client = this.getClient();
+    const client = this.getClient(options?.apiKey);
     const candidateModels = getFallbackChain(modelId);
     const contents = this.formatContents(messages);
 
@@ -245,7 +254,8 @@ export class GeminiProvider implements AIProvider {
 
   public async generateSpeech(
     text: string,
-    voice = 'Kore'
+    voice = 'Kore',
+    apiKey?: string
   ): Promise<{ audioBase64: string; mimeType: string; voice: string }> {
     if (!text || typeof text !== 'string') {
       throw new Error('Text parameter is required for speech generation.');
@@ -260,7 +270,7 @@ export class GeminiProvider implements AIProvider {
     }
 
     const validVoice = ['Kore', 'Zephyr', 'Puck', 'Fenrir', 'Charon'].includes(voice) ? voice : 'Kore';
-    const client = this.getClient();
+    const client = this.getClient(apiKey);
 
     const cleanText = text
       .replace(/[*_#`[\]()]/g, ' ')

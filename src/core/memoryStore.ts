@@ -5,6 +5,8 @@
 
 import { MemoryItem, MemoryCategory, MemoryPriority } from '../types';
 import { platformBridge } from './bridge';
+import { apiKeyService } from './apiKeyStore';
+import { getAiRoute } from './aiRoute';
 
 export const MEMORY_CATEGORIES: { id: MemoryCategory; label: string; icon: string; description: string }[] = [
   {
@@ -304,11 +306,18 @@ export class JennaMemoryService {
    */
   async extractMemoriesFromChat(messages: Array<{ role: string; content: string }>): Promise<MemoryItem[]> {
     if (messages.length === 0) return [];
-    
+
+    // AI extraction runs server-side; on the browser-direct transport there is
+    // no path to the extraction endpoint, so return nothing instead of hanging.
+    if ((await getAiRoute()) !== 'server') {
+      return [];
+    }
+
     const res = await fetch('/api/memory/extract', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...apiKeyService.authHeaders() },
       body: JSON.stringify({ messages }),
+      signal: AbortSignal.timeout(15000),
     });
 
     if (!res.ok) {

@@ -12,6 +12,9 @@ import { DiagnosticModal } from './components/DiagnosticModal';
 import { conversationService } from './core/conversationStore';
 import { memoryService } from './core/memoryStore';
 import { settingsService } from './core/settingsStore';
+import { apiKeyService } from './core/apiKeyStore';
+import { getAiRoute } from './core/aiRoute';
+import { browserStreamChat } from './core/ai/browserGemini';
 import { speechService } from './core/speechService';
 import { platformBridge } from './core/bridge';
 import { Conversation, Message, JennaSettings } from './types';
@@ -24,6 +27,8 @@ export default function App() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [memoryCount, setMemoryCount] = useState(0);
   const [settings, setSettings] = useState<JennaSettings>(settingsService.get());
+  const [serverHasKey, setServerHasKey] = useState(false);
+  const [userHasKey, setUserHasKey] = useState(apiKeyService.has());
 
   // Modal states
   const [isMemoryOpen, setIsMemoryOpen] = useState(false);
@@ -53,6 +58,15 @@ export default function App() {
         setActiveConversationId(conversationService.getActiveConversationId());
         setMessages([...conversationService.getCurrentMessages()]);
       }
+
+      // 4. Check whether the server has an env-configured Gemini key
+      try {
+        const healthRes = await fetch('/api/health');
+        const health = await healthRes.json();
+        if (isMounted) setServerHasKey(Boolean(health.hasApiKey));
+      } catch {
+        if (isMounted) setServerHasKey(false);
+      }
     }
 
     initApp();
@@ -78,11 +92,18 @@ export default function App() {
       }
     });
 
+    const unsubApiKey = apiKeyService.subscribe(() => {
+      if (isMounted) {
+        setUserHasKey(apiKeyService.has());
+      }
+    });
+
     return () => {
       isMounted = false;
       unsubConv();
       unsubMem();
       unsubSettings();
+      unsubApiKey();
     };
   }, []);
 
@@ -235,6 +256,41 @@ export default function App() {
     }, 450);
   }, []);
 
+  // Shared completion tail: finalize the assistant message, auto-play TTS, and
+  // hand the microphone back in continuous voice mode.
+  const completeAssistantTurn = useCallback(async (messageId: string, text: string) => {
+    await conversationService.finalizeStreamingMessage(messageId, 'complete');
+
+    const currentSettings = settingsService.get();
+    const trimmedText = text.trim();
+
+    console.log(`[Jenna Auto-TTS] 🔍 Checking Auto-TTS conditions: autoPlayTTS=${currentSettings.voice.autoPlayTTS}, textLength=${trimmedText.length}`);
+    if (currentSettings.voice.autoPlayTTS && trimmedText) {
+      console.log(`[Jenna Auto-TTS] 🚀 Triggering automatic speech synthesis for message "${messageId}" (${trimmedText.length} chars, engine: ${currentSettings.voice.ttsEngine})`);
+      speechService.speak(messageId, {
+        text: trimmedText,
+        engine: currentSettings.voice.ttsEngine,
+        geminiVoice: currentSettings.voice.geminiVoice,
+        browserVoiceURI: currentSettings.voice.browserVoiceURI,
+        rate: currentSettings.voice.speechRate,
+        pitch: currentSettings.voice.speechPitch,
+        onSuccess: () => {
+          console.log(`[Jenna Auto-TTS] ✅ Auto-TTS playback completed for message "${messageId}".`);
+          triggerContinuousVoiceNextTurn();
+        },
+        onError: (err) => {
+          console.warn(`[Jenna Auto-TTS] ❌ Auto-TTS playback reported error for message "${messageId}":`, err);
+          triggerContinuousVoiceNextTurn();
+        },
+      });
+    } else {
+      if (!currentSettings.voice.autoPlayTTS) {
+        console.log('[Jenna Auto-TTS] ⏸️ Auto-TTS is disabled in settings, skipping voice playback.');
+      }
+      triggerContinuousVoiceNextTurn();
+    }
+  }, [triggerContinuousVoiceNextTurn]);
+
   // Send message and handle SSE streaming
   const handleSendMessage = async (content: string, isRetry = false) => {
     const activeConvId = conversationService.getActiveConversationId();
@@ -302,9 +358,59 @@ export default function App() {
     let fullAssistantText = '';
 
     try {
+      // Decide the transport: server relay (default) or direct browser → Gemini
+      // (used when the hosting server cannot reach Google's API).
+      const aiRoute = await getAiRoute();
+      if (aiRoute === 'blocked') {
+        throw new Error(
+          'This server cannot reach the Gemini API. Open Settings → AI Engine and connect your own Gemini API key — Jenna will then chat with you directly from your browser.'
+        );
+      }
+
+      if (aiRoute === 'browser') {
+        // Direct browser → Gemini streaming (restricted-egress environments).
+        console.log('[Jenna AI Route] 🌐 Using direct browser → Gemini transport.');
+        for await (const token of browserStreamChat(
+          {
+            messages: historyForApi,
+            model: settings.ai.model,
+            temperature: settings.ai.temperature,
+            userProfile: settings.profile,
+            injectedMemories,
+            isAborted: () => controller.signal.aborted,
+          },
+          (modelUsed) => {
+            void conversationService.updateMessage(assistantMsg.id, { modelUsed });
+          }
+        )) {
+          fullAssistantText += token;
+          await conversationService.appendTokenToMessage(assistantMsg.id, token);
+        }
+
+        if (controller.signal.aborted) {
+          if (fullAssistantText.trim()) {
+            await conversationService.finalizeStreamingMessage(assistantMsg.id, 'complete');
+          } else {
+            await conversationService.finalizeStreamingMessage(
+              assistantMsg.id,
+              'error',
+              'Generation stopped by user.'
+            );
+          }
+          return;
+        }
+
+        if (!fullAssistantText.trim()) {
+          throw new Error('No response was generated by Jenna. Please retry.');
+        }
+
+        await completeAssistantTurn(assistantMsg.id, fullAssistantText);
+        return;
+      }
+
       const response = await fetch('/api/chat/stream', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...apiKeyService.authHeaders() },
         body: JSON.stringify({
           messages: historyForApi,
           model: settings.ai.model,
@@ -393,34 +499,7 @@ export default function App() {
         throw new Error('No response was generated by Jenna. Please retry.');
       }
 
-      await conversationService.finalizeStreamingMessage(assistantMsg.id, 'complete');
-
-      // Auto-play TTS if enabled in user settings
-      console.log(`[Jenna Auto-TTS] 🔍 Checking Auto-TTS conditions: autoPlayTTS=${settings.voice.autoPlayTTS}, textLength=${fullAssistantText.trim().length}`);
-      if (settings.voice.autoPlayTTS && fullAssistantText.trim()) {
-        console.log(`[Jenna Auto-TTS] 🚀 Triggering automatic speech synthesis for message "${assistantMsg.id}" (${fullAssistantText.trim().length} chars, engine: ${settings.voice.ttsEngine})`);
-        speechService.speak(assistantMsg.id, {
-          text: fullAssistantText,
-          engine: settings.voice.ttsEngine,
-          geminiVoice: settings.voice.geminiVoice,
-          browserVoiceURI: settings.voice.browserVoiceURI,
-          rate: settings.voice.speechRate,
-          pitch: settings.voice.speechPitch,
-          onSuccess: () => {
-            console.log(`[Jenna Auto-TTS] ✅ Auto-TTS playback completed for message "${assistantMsg.id}".`);
-            triggerContinuousVoiceNextTurn();
-          },
-          onError: (err) => {
-            console.warn(`[Jenna Auto-TTS] ❌ Auto-TTS playback reported error for message "${assistantMsg.id}":`, err);
-            triggerContinuousVoiceNextTurn();
-          },
-        });
-      } else {
-        if (!settings.voice.autoPlayTTS) {
-          console.log('[Jenna Auto-TTS] ⏸️ Auto-TTS is disabled in settings, skipping voice playback.');
-        }
-        triggerContinuousVoiceNextTurn();
-      }
+      await completeAssistantTurn(assistantMsg.id, fullAssistantText);
     } catch (err: any) {
       if (err.name === 'AbortError') {
         if (fullAssistantText.trim()) {
@@ -543,6 +622,7 @@ export default function App() {
           onOpenSettings={() => setIsSettingsOpen(true)}
           onUpdateSettings={handleUpdateSettings}
           settings={settings}
+          isAiConfigured={serverHasKey || userHasKey}
         />
       </main>
     </div>

@@ -4,6 +4,8 @@
  */
 
 import { platformBridge } from './bridge';
+import { apiKeyService } from './apiKeyStore';
+import { getAiRoute } from './aiRoute';
 
 export type SpeechRecognitionState = 'idle' | 'listening' | 'processing' | 'error';
 export type TTSPlaybackState = 'idle' | 'loading' | 'playing' | 'error';
@@ -127,11 +129,19 @@ export class JennaSpeechService {
 
     if (engine === 'gemini_neural') {
       try {
+        // Neural TTS runs server-side; skip it entirely when AI traffic is
+        // routed browser-direct (server has no Gemini egress) and use the
+        // browser speech synthesis fallback instead.
+        if ((await getAiRoute()) === 'browser') {
+          throw new Error('Server TTS route unavailable — using browser speech synthesis.');
+        }
+
         console.log(`[Jenna Voice] ⚡ Attempting Gemini Neural TTS (voice: "${geminiVoice}")...`);
         const response = await fetch('/api/tts', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...apiKeyService.authHeaders() },
           body: JSON.stringify({ text, voice: geminiVoice }),
+          signal: AbortSignal.timeout(12000),
         });
 
         if (!response.ok) {
