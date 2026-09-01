@@ -24,12 +24,14 @@ import {
   VolumeX,
   Mic,
   Radio,
+  KeyRound,
 } from 'lucide-react';
 import { JennaSettings } from '../types';
 import { memoryService } from '../core/memoryStore';
 import { conversationService } from '../core/conversationStore';
 import { speechService } from '../core/speechService';
 import { platformBridge } from '../core/bridge';
+import { apiKeyService } from '../core/apiKeyStore';
 import { AVAILABLE_MODELS } from '../core/ai';
 
 interface SettingsModalProps {
@@ -57,6 +59,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [isSaved, setIsSaved] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
+
+  // Gemini API key (bring-your-own-key) state
+  const [apiKeyInput, setApiKeyInput] = useState('');
+  const [hasLocalApiKey, setHasLocalApiKey] = useState(apiKeyService.has());
+  const [apiKeyError, setApiKeyError] = useState<string | null>(null);
+  const [apiKeyNotice, setApiKeyNotice] = useState<string | null>(null);
+  const [serverHasKey, setServerHasKey] = useState<'checking' | 'yes' | 'no'>('checking');
 
   const [availableBrowserVoices, setAvailableBrowserVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [diagnosticTestStatus, setDiagnosticTestStatus] = useState<
@@ -88,6 +97,53 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       };
     }
   }, []);
+
+  // Track locally-connected Gemini API key changes
+  useEffect(() => {
+    const unsub = apiKeyService.subscribe(() => {
+      setHasLocalApiKey(apiKeyService.has());
+    });
+    setHasLocalApiKey(apiKeyService.has());
+    return unsub;
+  }, []);
+
+  // Check whether the server itself has an env-configured key (when AI tab opens)
+  useEffect(() => {
+    if (!isOpen || activeTab !== 'ai') return;
+    let cancelled = false;
+    setServerHasKey('checking');
+    fetch('/api/health')
+      .then((res) => res.json())
+      .then((data) => {
+        if (!cancelled) setServerHasKey(data.hasApiKey ? 'yes' : 'no');
+      })
+      .catch(() => {
+        if (!cancelled) setServerHasKey('no');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, activeTab]);
+
+  const handleSaveApiKey = () => {
+    const error = apiKeyService.save(apiKeyInput);
+    if (error) {
+      setApiKeyError(error);
+      setApiKeyNotice(null);
+      return;
+    }
+    setApiKeyError(null);
+    setApiKeyInput('');
+    setHasLocalApiKey(true);
+    setApiKeyNotice('Gemini API key connected. Jenna is activated in this browser.');
+  };
+
+  const handleClearApiKey = () => {
+    apiKeyService.clear();
+    setHasLocalApiKey(false);
+    setApiKeyError(null);
+    setApiKeyNotice('API key removed from this browser.');
+  };
 
   const handleTestVoiceDiagnostic = async () => {
     setDiagnosticTestStatus('testing');
@@ -430,6 +486,105 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             {/* 2. AI Engine */}
             {activeTab === 'ai' && (
               <div className="space-y-4">
+                {/* Gemini API Connection (Bring Your Own Key) */}
+                <div
+                  className={`p-3.5 rounded-xl border space-y-2.5 ${
+                    hasLocalApiKey
+                      ? 'bg-emerald-950/20 border-emerald-800/50'
+                      : serverHasKey === 'yes'
+                      ? 'bg-slate-950/60 border-slate-800'
+                      : 'bg-amber-950/20 border-amber-800/40'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-200">
+                      <KeyRound
+                        className={`w-3.5 h-3.5 ${hasLocalApiKey ? 'text-emerald-400' : 'text-amber-400'}`}
+                      />
+                      Gemini API Connection
+                    </label>
+                    {hasLocalApiKey ? (
+                      <span className="flex items-center gap-1 text-[11px] text-emerald-300 font-semibold">
+                        <CheckCircle2 className="w-3 h-3" /> Connected
+                      </span>
+                    ) : serverHasKey === 'yes' ? (
+                      <span className="text-[11px] text-slate-400">Server key active</span>
+                    ) : serverHasKey === 'checking' ? (
+                      <span className="text-[11px] text-slate-500">Checking…</span>
+                    ) : (
+                      <span className="text-[11px] text-amber-300 font-semibold">Not connected</span>
+                    )}
+                  </div>
+
+                  {hasLocalApiKey ? (
+                    <>
+                      <p className="text-[11px] text-slate-400 leading-relaxed">
+                        Your Gemini API key is saved in this browser and attached only to your own
+                        requests. Jenna is fully activated.
+                      </p>
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={handleClearApiKey}
+                          className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-medium cursor-pointer transition-colors"
+                        >
+                          Remove key
+                        </button>
+                        <a
+                          href="https://aistudio.google.com/apikey"
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 text-[11px] text-indigo-400 hover:text-indigo-300"
+                        >
+                          Manage keys <ExternalLink className="w-3 h-3" />
+                        </a>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-[11px] text-slate-400 leading-relaxed">
+                        {serverHasKey === 'yes'
+                          ? 'A server API key is already active. You can additionally connect your own key below to use your personal quota.'
+                          : 'Paste your Google Gemini API key to activate Jenna. It is stored only in this browser and used solely for your own requests.'}
+                      </p>
+                      <div className="flex gap-2">
+                        <input
+                          type="password"
+                          inputMode="text"
+                          autoComplete="off"
+                          spellCheck={false}
+                          placeholder="Paste your API key (starts with AIza…)"
+                          value={apiKeyInput}
+                          onChange={(e) => setApiKeyInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') handleSaveApiKey();
+                          }}
+                          className="flex-1 min-w-0 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white font-mono placeholder:text-slate-600 placeholder:font-sans focus:outline-hidden focus:border-indigo-500"
+                        />
+                        <button
+                          onClick={handleSaveApiKey}
+                          className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold cursor-pointer transition-colors whitespace-nowrap"
+                        >
+                          Connect
+                        </button>
+                      </div>
+                      {apiKeyError && (
+                        <p className="text-[11px] text-rose-400 leading-relaxed">{apiKeyError}</p>
+                      )}
+                      <a
+                        href="https://aistudio.google.com/apikey"
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 text-[11px] text-indigo-400 hover:text-indigo-300"
+                      >
+                        Get a free API key from Google AI Studio <ExternalLink className="w-3 h-3" />
+                      </a>
+                    </>
+                  )}
+                  {apiKeyNotice && (
+                    <p className="text-[11px] text-emerald-300">{apiKeyNotice}</p>
+                  )}
+                </div>
+
                 <div>
                   <label className="block text-xs font-semibold text-slate-300 mb-1.5">
                     Active AI Model & Architecture

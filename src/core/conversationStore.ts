@@ -5,6 +5,9 @@
 
 import { Conversation, Message } from '../types';
 import { platformBridge } from './bridge';
+import { apiKeyService } from './apiKeyStore';
+import { getAiRoute } from './aiRoute';
+import { extractHeuristicTitle } from './promptBuilder';
 
 export class JennaConversationService {
   private conversations: Conversation[] = [];
@@ -251,10 +254,16 @@ export class JennaConversationService {
     }
 
     try {
+      // Server-side AI title generation only works on the server transport.
+      if ((await getAiRoute()) !== 'server') {
+        throw new Error('Browser-direct route — using heuristic title.');
+      }
+
       const res = await fetch('/api/chat/title', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...apiKeyService.authHeaders() },
         body: JSON.stringify({ firstMessage: firstMessageText }),
+        signal: AbortSignal.timeout(10000),
       });
       if (res.ok) {
         const data = await res.json();

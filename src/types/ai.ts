@@ -42,6 +42,11 @@ export interface AIGenerationOptions {
   responseSchema?: any;
   responseModalities?: any[];
   speechConfig?: any;
+  /**
+   * Optional per-request API key (bring-your-own-key).
+   * When provided it takes precedence over the server's GEMINI_API_KEY env var.
+   */
+  apiKey?: string;
 }
 
 export interface AIStreamOptions extends AIGenerationOptions {
@@ -100,6 +105,7 @@ export interface AIProvider {
   ): Promise<AIStreamResult>;
   generateSpeech?(
     text: string,
-    voice?: string
+    voice?: string,
+    apiKey?: string
   ): Promise<{ audioBase64: string; mimeType: string; voice: string }>;
 }

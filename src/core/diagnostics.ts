@@ -14,6 +14,8 @@ import { DiagnosticTestResult } from '../types';
 import { platformBridge } from './bridge';
 import { memoryService } from './memoryStore';
 import { settingsService } from './settingsStore';
+import { apiKeyService } from './apiKeyStore';
+import { getAiRoute } from './aiRoute';
 import { AVAILABLE_MODELS, getModelMetadata, getDefaultModel, getFallbackChain } from './ai';
 
 export async function runAllDiagnostics(
@@ -123,11 +125,16 @@ export async function runAllDiagnostics(
 
   onUpdate([...tests]);
 
+  // Resolve AI transport once: server relay vs browser-direct.
+  // Server-streaming and server-TTS diagnostics are meaningless on the
+  // browser-direct transport, so they are reported as skipped.
+  const aiRoute = await getAiRoute().catch(() => 'blocked' as const);
+
   // Test 1: Server & API Key
   updateTest('test_health', { status: 'running' });
   const t1Start = performance.now();
   try {
-    const res = await fetch('/api/health');
+    const res = await fetch('/api/health', { headers: apiKeyService.authHeaders() });
     const data = await res.json();
     const latency = Math.round(performance.now() - t1Start);
 
@@ -135,7 +142,11 @@ export async function runAllDiagnostics(
       updateTest('test_health', {
         status: 'success',
         latencyMs: latency,
-        message: `Server online. Assistant: ${data.assistant}. API Key attached: ${data.hasApiKey ? 'Yes' : 'No'}.`,
+        message: `Server online. Assistant: ${data.assistant}. API Key attached: ${
+          data.hasApiKey
+            ? `Yes (${data.keySource === 'request' ? 'your connected key' : 'server environment'})`
+            : 'No — connect your key in Settings → AI Engine'
+        }.`,
         details: data,
       });
     } else {
@@ -186,13 +197,22 @@ export async function runAllDiagnostics(
   updateTest('test_stream', { status: 'running' });
   const t2Start = performance.now();
   try {
+    if (aiRoute !== 'server') {
+      throw new Error(
+        aiRoute === 'browser'
+          ? 'Skipped: server cannot reach Gemini — chat is running browser-direct with your connected key.'
+          : 'Skipped: no API key connected (Settings → AI Engine).'
+      );
+    }
+
     const streamRes = await fetch('/api/chat/stream', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...apiKeyService.authHeaders() },
       body: JSON.stringify({
         messages: [{ role: 'user', content: 'Say: "Jenna Phase 1 Test Complete" in 5 words.' }],
         model: 'gemini-3.7-flash',
       }),
+      signal: AbortSignal.timeout(20000),
     });
 
     if (!streamRes.ok) {
@@ -235,9 +255,10 @@ export async function runAllDiagnostics(
       throw new Error('No tokens received in stream.');
     }
   } catch (err: any) {
+    const skipped = String(err?.message || '').startsWith('Skipped:');
     updateTest('test_stream', {
-      status: 'failed',
-      message: `Streaming failed: ${err?.message}`,
+      status: skipped ? 'skipped' : 'failed',
+      message: skipped ? err?.message : `Streaming failed: ${err?.message}`,
     });
   }
 
@@ -254,14 +275,23 @@ export async function runAllDiagnostics(
       { role: 'user', content: 'What is 2 + 2? Reply with just the number.' },
     ];
 
+    if (aiRoute !== 'server') {
+      throw new Error(
+        aiRoute === 'browser'
+          ? 'Skipped: server cannot reach Gemini — chat is running browser-direct with your connected key.'
+          : 'Skipped: no API key connected (Settings → AI Engine).'
+      );
+    }
+
     const res = await fetch('/api/chat/stream', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...apiKeyService.authHeaders() },
       body: JSON.stringify({
         messages: mockMultiTurns,
         model: 'gemini-3.7-flash',
         temperature: 0.2,
       }),
+      signal: AbortSignal.timeout(20000),
     });
 
     if (!res.ok) {
@@ -304,9 +334,10 @@ export async function runAllDiagnostics(
       throw new Error('No tokens received from multi-turn context stream.');
     }
   } catch (err: any) {
+    const skipped = String(err?.message || '').startsWith('Skipped:');
     updateTest('test_context_window', {
-      status: 'failed',
-      message: `Context window test failed: ${err?.message}`,
+      status: skipped ? 'skipped' : 'failed',
+      message: skipped ? err?.message : `Context window test failed: ${err?.message}`,
     });
   }
 
@@ -485,10 +516,19 @@ export async function runAllDiagnostics(
   // Test 5: Voice TTS
   updateTest('test_tts', { status: 'running' });
   try {
+    if (aiRoute !== 'server') {
+      throw new Error(
+        aiRoute === 'browser'
+          ? 'Skipped: server TTS unavailable — browser-direct mode uses SpeechSynthesis.'
+          : 'Skipped: no API key connected (Settings → AI Engine).'
+      );
+    }
+
     const res = await fetch('/api/tts', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...apiKeyService.authHeaders() },
       body: JSON.stringify({ text: 'Jenna voice test', voice: 'Kore' }),
+      signal: AbortSignal.timeout(20000),
     });
     if (res.ok) {
       const data = await res.json();
@@ -519,9 +559,10 @@ export async function runAllDiagnostics(
       }
     }
   } catch (err: any) {
+    const skipped = String(err?.message || '').startsWith('Skipped:');
     updateTest('test_tts', {
-      status: 'failed',
-      message: `TTS test failed: ${err?.message}`,
+      status: skipped ? 'skipped' : 'failed',
+      message: skipped ? err?.message : `TTS test failed: ${err?.message}`,
     });
   }
 

@@ -20,16 +20,62 @@ app.use(express.json({ limit: '10mb' }));
 // Utility: Sleep helper for backoff
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * Resolve the Gemini API key for a request.
+ * Priority: browser-supplied key (x-gemini-key header) > server GEMINI_API_KEY env var.
+ * This lets users connect their own key from the web UI without server access.
+ */
+function resolveApiKey(req: Request): { apiKey: string; keySource: 'request' | 'env' | 'none' } {
+  const headerKey = req.header('x-gemini-key');
+  if (typeof headerKey === 'string' && headerKey.trim()) {
+    return { apiKey: headerKey.trim(), keySource: 'request' };
+  }
+  const envKey = process.env.GEMINI_API_KEY;
+  if (envKey && envKey.trim() && envKey !== 'MY_GEMINI_API_KEY') {
+    return { apiKey: envKey.trim(), keySource: 'env' };
+  }
+  return { apiKey: '', keySource: 'none' };
+}
+
 // Health check
 app.get('/api/health', (req: Request, res: Response) => {
-  const hasKey = Boolean(process.env.GEMINI_API_KEY);
+  const { apiKey, keySource } = resolveApiKey(req);
   res.json({
     status: 'ok',
     assistant: 'Jenna',
     version: '1.0.0-phase2-item2',
-    hasApiKey: hasKey,
+    hasApiKey: Boolean(apiKey),
+    keySource,
     timestamp: Date.now(),
   });
+});
+
+// Cached AI egress reachability probe: can this server reach Google's API at all?
+let aiEgressProbe: { reachable: boolean; checkedAt: number } | null = null;
+
+app.get('/api/ai/probe', async (req: Request, res: Response) => {
+  const now = Date.now();
+  if (!aiEgressProbe || now - aiEgressProbe.checkedAt > 60_000) {
+    let reachable = false;
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 2500);
+      const { apiKey } = resolveApiKey(req);
+      const headers: Record<string, string> = {};
+      if (apiKey) headers['x-goog-api-key'] = apiKey;
+      const probeRes = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1', {
+        headers,
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      // Any HTTP response (even 401/403) proves outbound egress to Google works.
+      reachable = Boolean(probeRes.status);
+    } catch {
+      reachable = false;
+    }
+    aiEgressProbe = { reachable, checkedAt: now };
+  }
+  res.json({ egressReachable: aiEgressProbe.reachable, checkedAt: aiEgressProbe.checkedAt });
 });
 
 // Stream Gemini Chat completion
@@ -44,10 +90,11 @@ app.post('/api/chat/stream', async (req: Request, res: Response) => {
       temperature = 0.7,
     } = req.body;
 
-    const apiKey = process.env.GEMINI_API_KEY;
+    const apiKey = resolveApiKey(req).apiKey;
     if (!apiKey) {
       res.status(500).json({
-        error: 'GEMINI_API_KEY is missing. Please configure your API key in Settings > Secrets.',
+        error:
+          'No Gemini API key connected. Open Settings → AI Engine and paste your Gemini API key to activate Jenna.',
       });
       return;
     }
@@ -110,6 +157,7 @@ app.post('/api/chat/stream', async (req: Request, res: Response) => {
       primaryModel,
       validTurns,
       {
+        apiKey,
         systemInstruction: fullSystemPrompt,
         temperature: Number(temperature) || 0.7,
         onToken: (token: string) => {
@@ -180,6 +228,7 @@ app.post('/api/chat/title', async (req: Request, res: Response) => {
           },
         ],
         {
+          apiKey: resolveApiKey(req).apiKey,
           systemInstruction: 'You are a concise title generator. Respond only with the title.',
           temperature: 0.2,
         }
@@ -220,6 +269,7 @@ ${transcript}`;
         'gemini-3.7-flash',
         [{ role: 'user', content: prompt }],
         {
+          apiKey: resolveApiKey(req).apiKey,
           systemInstruction: 'You extract durable user facts and preferences for long-term AI memory.',
           responseMimeType: 'application/json',
           responseSchema: {
@@ -288,7 +338,7 @@ app.post('/api/tts', async (req: Request, res: Response) => {
     const validVoice = ['Kore', 'Zephyr', 'Puck', 'Fenrir', 'Charon'].includes(voice) ? voice : 'Kore';
 
     try {
-      const speech = await aiBrain.generateSpeech(text, validVoice);
+      const speech = await aiBrain.generateSpeech(text, validVoice, resolveApiKey(req).apiKey);
       res.json({
         audio: speech.audioBase64,
         mimeType: speech.mimeType,
