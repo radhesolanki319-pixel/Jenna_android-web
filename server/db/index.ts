@@ -5,16 +5,24 @@
  */
 
 import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite';
-import { createRequire } from 'node:module';
 import path from 'path';
 import fs from 'fs';
 
-// Loaded via createRequire so Vite/Vitest bundlers don't try to statically
-// resolve the (Node 22+) built-in module.
-const nodeRequire = createRequire(import.meta.url);
-const { DatabaseSync } = nodeRequire('node:sqlite') as {
-  DatabaseSync: typeof DatabaseSyncType;
-};
+// Loaded via process.getBuiltinModule (Node 22.3+) so that:
+//  - Vite/Vitest bundlers don't try to statically resolve the built-in module
+//    ("Cannot bundle built-in module node:sqlite"), and
+//  - the esbuild CJS production bundle boots correctly (import.meta.url is
+//    undefined in CJS output, which broke the previous createRequire approach).
+// process.getBuiltinModule works identically in ESM and CJS contexts.
+const sqlite = process.getBuiltinModule('node:sqlite') as
+  | { DatabaseSync: typeof DatabaseSyncType }
+  | undefined;
+if (!sqlite) {
+  throw new Error(
+    'node:sqlite is unavailable. Jarvis requires Node.js 22.5+ (built-in SQLite support).'
+  );
+}
+const { DatabaseSync } = sqlite;
 
 export interface AgentRunRow {
   id: string;
