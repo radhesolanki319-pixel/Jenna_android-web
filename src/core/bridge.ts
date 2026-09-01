@@ -466,7 +466,7 @@ export class WebJennaBridge implements IJennaStorageBridge, IJennaAudioBridge {
         authType: 'local_device',
       },
       ai: {
-        model: 'gemini-3.7-flash',
+        model: 'auto',
         temperature: 0.7,
         enableThinking: true,
         streamResponses: true,
@@ -1024,6 +1024,11 @@ export interface IJennaAndroidNative {
   vibrate(patternType: string): void;
   showToast(message: string, isLong?: boolean): void;
   getDeviceInfo(): string; // JSON
+
+  // Async Bridge v2 (Jarvis Phase 2) — optional: present on newer native builds.
+  // Executes storage operations off the WebView JS-bridge thread and delivers
+  // results via window.__onJennaAndroidAsyncResult(requestId, ok, payloadJson).
+  requestAsync?(requestId: string, method: string, paramsJson: string): void;
 }
 
 /**
@@ -1035,13 +1040,62 @@ export class AndroidJennaBridge implements IJennaStorageBridge, IJennaAudioBridg
   private backPressHandlers: Array<() => boolean> = [];
   private wakeWordListeners: Array<(keyword: string) => void> = [];
   private intentListeners: Array<(intent: AndroidIntentPayload) => void> = [];
+  private asyncRequests = new Map<
+    string,
+    { resolve: (payload: string) => void; reject: (err: Error) => void; timer: ReturnType<typeof setTimeout> }
+  >();
+  private asyncRequestCounter = 0;
 
   constructor() {
     this.setupWindowListeners();
   }
 
+  /**
+   * Async Bridge v2: calls native requestAsync() when available so Room I/O
+   * never blocks the WebView bridge thread. Returns null when the native
+   * layer doesn't support v2 (caller should fall back to the sync API).
+   */
+  private callAsync(method: string, params: Record<string, unknown> = {}): Promise<string> | null {
+    const native = this.native;
+    if (!native || typeof native.requestAsync !== 'function') return null;
+    const requestId = `req_${Date.now()}_${++this.asyncRequestCounter}`;
+    return new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.asyncRequests.delete(requestId);
+        reject(new Error(`Android async bridge timeout for ${method}`));
+      }, 10_000);
+      this.asyncRequests.set(requestId, { resolve, reject, timer });
+      try {
+        native.requestAsync!(requestId, method, JSON.stringify(params));
+      } catch (err) {
+        clearTimeout(timer);
+        this.asyncRequests.delete(requestId);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
+  }
+
   private setupWindowListeners(): void {
     if (typeof window === 'undefined') return;
+
+    // Async Bridge v2 result channel
+    (window as any).__onJennaAndroidAsyncResult = (requestId: string, ok: boolean, payloadJson: string) => {
+      const pending = this.asyncRequests.get(requestId);
+      if (!pending) return;
+      clearTimeout(pending.timer);
+      this.asyncRequests.delete(requestId);
+      if (ok) {
+        pending.resolve(payloadJson);
+      } else {
+        let message = 'Android async bridge error';
+        try {
+          message = JSON.parse(payloadJson)?.error || message;
+        } catch {
+          /* keep default */
+        }
+        pending.reject(new Error(message));
+      }
+    };
 
     // Native Activity back button event
     (window as any).__onJennaAndroidBackPressed = (): boolean => {
@@ -1103,7 +1157,8 @@ export class AndroidJennaBridge implements IJennaStorageBridge, IJennaAudioBridg
   async getConversations(): Promise<Conversation[]> {
     if (this.native) {
       try {
-        const raw = this.native.getConversations();
+        const asyncCall = this.callAsync('getConversations');
+        const raw = asyncCall ? await asyncCall : this.native.getConversations();
         if (raw) return JSON.parse(raw);
       } catch (err) {
         console.warn('[Jenna Android Bridge] Error fetching conversations from Room DB:', err);
@@ -1115,7 +1170,9 @@ export class AndroidJennaBridge implements IJennaStorageBridge, IJennaAudioBridg
   async saveConversation(conv: Conversation): Promise<void> {
     if (this.native) {
       try {
-        this.native.saveConversation(JSON.stringify(conv));
+        const asyncCall = this.callAsync('saveConversation', { json: JSON.stringify(conv) });
+        if (asyncCall) await asyncCall;
+        else this.native.saveConversation(JSON.stringify(conv));
         return;
       } catch (err) {
         console.warn('[Jenna Android Bridge] Error saving conversation to Room DB:', err);
@@ -1127,7 +1184,9 @@ export class AndroidJennaBridge implements IJennaStorageBridge, IJennaAudioBridg
   async deleteConversation(id: string): Promise<void> {
     if (this.native) {
       try {
-        this.native.deleteConversation(id);
+        const asyncCall = this.callAsync('deleteConversation', { id });
+        if (asyncCall) await asyncCall;
+        else this.native.deleteConversation(id);
         return;
       } catch (err) {
         console.warn('[Jenna Android Bridge] Error deleting conversation:', err);
@@ -1139,7 +1198,8 @@ export class AndroidJennaBridge implements IJennaStorageBridge, IJennaAudioBridg
   async getMessages(conversationId: string): Promise<Message[]> {
     if (this.native) {
       try {
-        const raw = this.native.getMessages(conversationId);
+        const asyncCall = this.callAsync('getMessages', { conversationId });
+        const raw = asyncCall ? await asyncCall : this.native.getMessages(conversationId);
         if (raw) {
           const parsed = JSON.parse(raw);
           if (Array.isArray(parsed)) {
@@ -1167,7 +1227,12 @@ export class AndroidJennaBridge implements IJennaStorageBridge, IJennaAudioBridg
   async saveMessages(conversationId: string, messages: Message[]): Promise<void> {
     if (this.native) {
       try {
-        this.native.saveMessages(conversationId, JSON.stringify(messages));
+        const asyncCall = this.callAsync('saveMessages', {
+          conversationId,
+          json: JSON.stringify(messages),
+        });
+        if (asyncCall) await asyncCall;
+        else this.native.saveMessages(conversationId, JSON.stringify(messages));
         return;
       } catch (err) {
         console.warn('[Jenna Android Bridge] Error saving messages:', err);
@@ -1179,7 +1244,8 @@ export class AndroidJennaBridge implements IJennaStorageBridge, IJennaAudioBridg
   async getMemories(): Promise<MemoryItem[]> {
     if (this.native) {
       try {
-        const raw = this.native.getMemories();
+        const asyncCall = this.callAsync('getMemories');
+        const raw = asyncCall ? await asyncCall : this.native.getMemories();
         if (raw) return JSON.parse(raw);
       } catch (err) {
         console.warn('[Jenna Android Bridge] Error fetching memories from Room DB:', err);
@@ -1191,7 +1257,9 @@ export class AndroidJennaBridge implements IJennaStorageBridge, IJennaAudioBridg
   async saveMemory(item: MemoryItem): Promise<void> {
     if (this.native) {
       try {
-        this.native.saveMemory(JSON.stringify(item));
+        const asyncCall = this.callAsync('saveMemory', { json: JSON.stringify(item) });
+        if (asyncCall) await asyncCall;
+        else this.native.saveMemory(JSON.stringify(item));
         return;
       } catch (err) {
         console.warn('[Jenna Android Bridge] Error saving memory to Room DB:', err);
@@ -1203,7 +1271,9 @@ export class AndroidJennaBridge implements IJennaStorageBridge, IJennaAudioBridg
   async deleteMemory(id: string): Promise<void> {
     if (this.native) {
       try {
-        this.native.deleteMemory(id);
+        const asyncCall = this.callAsync('deleteMemory', { id });
+        if (asyncCall) await asyncCall;
+        else this.native.deleteMemory(id);
         return;
       } catch (err) {
         console.warn('[Jenna Android Bridge] Error deleting memory:', err);
@@ -1215,7 +1285,9 @@ export class AndroidJennaBridge implements IJennaStorageBridge, IJennaAudioBridg
   async clearAllMemories(): Promise<void> {
     if (this.native) {
       try {
-        this.native.clearAllMemories();
+        const asyncCall = this.callAsync('clearAllMemories');
+        if (asyncCall) await asyncCall;
+        else this.native.clearAllMemories();
         return;
       } catch (err) {
         console.warn('[Jenna Android Bridge] Error clearing memories:', err);
@@ -1227,7 +1299,8 @@ export class AndroidJennaBridge implements IJennaStorageBridge, IJennaAudioBridg
   async getUserIdentity(): Promise<UserIdentity> {
     if (this.native) {
       try {
-        const raw = this.native.getUserIdentity();
+        const asyncCall = this.callAsync('getUserIdentity');
+        const raw = asyncCall ? await asyncCall : this.native.getUserIdentity();
         if (raw) return JSON.parse(raw);
       } catch (err) {
         console.warn('[Jenna Android Bridge] Error fetching user identity:', err);
@@ -1239,7 +1312,8 @@ export class AndroidJennaBridge implements IJennaStorageBridge, IJennaAudioBridg
   async saveUserIdentity(identity: Partial<UserIdentity>): Promise<UserIdentity> {
     if (this.native) {
       try {
-        const raw = this.native.saveUserIdentity(JSON.stringify(identity));
+        const asyncCall = this.callAsync('saveUserIdentity', { json: JSON.stringify(identity) });
+        const raw = asyncCall ? await asyncCall : this.native.saveUserIdentity(JSON.stringify(identity));
         if (raw) return JSON.parse(raw);
       } catch (err) {
         console.warn('[Jenna Android Bridge] Error saving user identity:', err);
@@ -1251,7 +1325,8 @@ export class AndroidJennaBridge implements IJennaStorageBridge, IJennaAudioBridg
   async getSettings(): Promise<JennaSettings> {
     if (this.native) {
       try {
-        const raw = this.native.getSettings();
+        const asyncCall = this.callAsync('getSettings');
+        const raw = asyncCall ? await asyncCall : this.native.getSettings();
         if (raw) return JSON.parse(raw);
       } catch (err) {
         console.warn('[Jenna Android Bridge] Error fetching settings:', err);
@@ -1263,7 +1338,9 @@ export class AndroidJennaBridge implements IJennaStorageBridge, IJennaAudioBridg
   async saveSettings(settings: JennaSettings): Promise<void> {
     if (this.native) {
       try {
-        this.native.saveSettings(JSON.stringify(settings));
+        const asyncCall = this.callAsync('saveSettings', { json: JSON.stringify(settings) });
+        if (asyncCall) await asyncCall;
+        else this.native.saveSettings(JSON.stringify(settings));
         return;
       } catch (err) {
         console.warn('[Jenna Android Bridge] Error saving settings:', err);

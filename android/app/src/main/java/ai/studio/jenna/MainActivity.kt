@@ -47,8 +47,9 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "MainActivity"
         private const val PERMISSION_REQUEST_RECORD_AUDIO = 101
-        // URL for development and production hosting
-        private const val APP_URL = "http://10.0.2.2:3000" // Standard Android emulator localhost host loopback
+        // APP_URL comes from BuildConfig (per build type / Gradle property).
+        // Debug: http://10.0.2.2:3000 (emulator loopback). Release: JENNA_APP_URL property.
+        private val APP_URL: String = BuildConfig.APP_URL
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -65,7 +66,12 @@ class MainActivity : AppCompatActivity() {
         setupBackNavigation()
 
         // Load Jenna Assistant
-        webView.loadUrl(APP_URL)
+        if (APP_URL.isBlank()) {
+            Log.e(TAG, "APP_URL is not configured. Set the JENNA_APP_URL Gradle property for release builds.")
+            Toast.makeText(this, "App URL not configured for this build.", Toast.LENGTH_LONG).show()
+        } else {
+            webView.loadUrl(APP_URL)
+        }
     }
 
     override fun onNewIntent(intent: Intent?) {
@@ -144,6 +150,7 @@ class MainActivity : AppCompatActivity() {
             wakeWordDetector = wakeWordDetector,
             onExitRequested = { finish() }
         )
+        bridge.setWebViewProvider { webView }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -152,28 +159,42 @@ class MainActivity : AppCompatActivity() {
             javaScriptEnabled = true
             domStorageEnabled = true
             databaseEnabled = true
-            allowFileAccess = true
-            allowContentAccess = true
+            // Hardened (Jarvis Phase 2 — WS0): the app is served over HTTP(S),
+            // never from local files. File access from web content is disabled.
+            allowFileAccess = false
+            allowContentAccess = false
             mediaPlaybackRequiresUserGesture = false
             cacheMode = WebSettings.LOAD_DEFAULT
             userAgentString = "${userAgentString} JennaAndroid/1.0.0"
         }
 
-        // Expose Jenna Android JavascriptInterface to WebView
+        // Expose the Jenna Android JavascriptInterface to the WebView under a
+        // single, explicit name. (The legacy duplicate "Android" alias was removed
+        // to shrink the injection surface; web code uses window.JennaAndroid.)
         webView.addJavascriptInterface(bridge, "JennaAndroid")
-        webView.addJavascriptInterface(bridge, "Android")
 
         webView.webChromeClient = object : WebChromeClient() {
             override fun onPermissionRequest(request: PermissionRequest?) {
                 request?.let {
-                    val requestedResources = it.resources
-                    for (r in requestedResources) {
-                        if (r == PermissionRequest.RESOURCE_AUDIO_CAPTURE) {
-                            it.grant(arrayOf(PermissionRequest.RESOURCE_AUDIO_CAPTURE))
-                            return
-                        }
+                    // Hardened (Jarvis Phase 2 — WS0): only grant audio capture,
+                    // only to our own app origin, and only when the OS-level
+                    // RECORD_AUDIO permission has actually been granted.
+                    val isOwnOrigin = try {
+                        APP_URL.isNotBlank() && it.origin.toString().startsWith(APP_URL.trimEnd('/'))
+                    } catch (e: Exception) {
+                        false
                     }
-                    it.grant(requestedResources)
+                    val hasOsAudioPermission = ContextCompat.checkSelfPermission(
+                        this@MainActivity, Manifest.permission.RECORD_AUDIO
+                    ) == PackageManager.PERMISSION_GRANTED
+
+                    if (isOwnOrigin && hasOsAudioPermission &&
+                        it.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+                    ) {
+                        it.grant(arrayOf(PermissionRequest.RESOURCE_AUDIO_CAPTURE))
+                    } else {
+                        it.deny()
+                    }
                 }
             }
 
@@ -286,6 +307,7 @@ class MainActivity : AppCompatActivity() {
         speechManager.stopListening()
         ttsManager.shutdown()
         audioPlayer.stop()
+        bridge.destroy()
         webView.destroy()
     }
 }

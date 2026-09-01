@@ -4,6 +4,15 @@ plugins {
     id("kotlin-kapt")
 }
 
+// App URL configuration (Jarvis Phase 2 — M5):
+// - Debug builds default to the Android emulator loopback (http://10.0.2.2:3000).
+// - Release builds REQUIRE an explicit URL via the Gradle property `JENNA_APP_URL`
+//   (gradle.properties, -PJENNA_APP_URL=..., or ORG_GRADLE_PROJECT_JENNA_APP_URL env).
+//   No production URL is ever hard-coded in source.
+val debugAppUrl: String =
+    (project.findProperty("JENNA_APP_URL_DEBUG") as String?) ?: "http://10.0.2.2:3000"
+val releaseAppUrl: String? = project.findProperty("JENNA_APP_URL") as String?
+
 android {
     namespace = "ai.studio.jenna"
     compileSdk = 34
@@ -22,12 +31,24 @@ android {
     }
 
     buildTypes {
+        debug {
+            buildConfigField("String", "APP_URL", "\"$debugAppUrl\"")
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // Fail fast at build time instead of shipping a broken/hard-coded URL.
+            if (releaseAppUrl.isNullOrBlank()) {
+                buildConfigField("String", "APP_URL", "\"\"")
+            } else {
+                require(releaseAppUrl.startsWith("https://")) {
+                    "JENNA_APP_URL must be an https:// URL for release builds."
+                }
+                buildConfigField("String", "APP_URL", "\"$releaseAppUrl\"")
+            }
         }
     }
 
@@ -42,6 +63,7 @@ android {
 
     buildFeatures {
         viewBinding = true
+        buildConfig = true
     }
 }
 

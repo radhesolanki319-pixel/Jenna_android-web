@@ -11,11 +11,11 @@ describe('Settings & User Identity Service (Phase 1 Foundation)', () => {
     }
   });
 
-  it('should provide default settings with locked Jenna model gemini-3.7-flash', () => {
+  it('should provide default settings with router-driven "auto" model selection', () => {
     const settings = settingsService.get();
     expect(settings).toBeDefined();
     expect(settings.profile.name).toBe('User');
-    expect(settings.ai.model).toBe('gemini-3.7-flash');
+    expect(settings.ai.model).toBe('auto');
     expect(settings.voice.geminiVoice).toBe('Kore');
     expect(settings.appearance.theme).toBe('dark');
   });
@@ -57,10 +57,10 @@ describe('Settings & User Identity Service (Phase 1 Foundation)', () => {
     expect(current.voice.autoPlayTTS).toBe(false);
   });
 
-  it('should enforce the locked Jenna model even if partial update requests another model', async () => {
+  it('should honor explicit model selection (model lock removed for ModelRouter)', async () => {
     await settingsService.update({
       ai: {
-        model: 'gemini-1.5-pro' as any,
+        model: 'gemini-3.7-flash',
         temperature: 0.8,
         enableThinking: true,
         streamResponses: true,
@@ -68,9 +68,18 @@ describe('Settings & User Identity Service (Phase 1 Foundation)', () => {
     });
 
     const current = settingsService.get();
-    // Model must remain locked to gemini-3.7-flash
     expect(current.ai.model).toBe('gemini-3.7-flash');
     expect(current.ai.temperature).toBe(0.8);
+  });
+
+  it('should migrate stale legacy model ids to "auto" on load', async () => {
+    localStorage.setItem(
+      'jenna_settings_v1',
+      JSON.stringify({ ai: { model: 'gemini-1.5-pro', temperature: 0.7 } })
+    );
+    const fresh = new JennaSettingsService();
+    const loaded = await fresh.load();
+    expect(loaded.ai.model).toBe('auto');
   });
 
   it('should retrieve and update user identity', async () => {

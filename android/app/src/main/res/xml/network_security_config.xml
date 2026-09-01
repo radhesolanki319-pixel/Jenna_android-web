@@ -1,9 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Hardened (Jarvis Phase 2 - WS0):
+  Cleartext HTTP is DISABLED globally. It is permitted ONLY for the Android
+  emulator loopback host (10.0.2.2), which debug builds use to reach the local
+  dev server. Release builds must point at an https:// URL (enforced in Gradle).
+-->
 <network-security-config>
-    <base-config cleartextTrafficPermitted="true">
+    <base-config cleartextTrafficPermitted="false">
         <trust-anchors>
             <certificates src="system" />
-            <certificates src="user" />
         </trust-anchors>
     </base-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">10.0.2.2</domain>
+    </domain-config>
 </network-security-config>

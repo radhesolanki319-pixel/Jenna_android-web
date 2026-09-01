@@ -6,10 +6,18 @@
 import { JennaSettings, UserProfile, UserIdentity } from '../types';
 import { platformBridge } from './bridge';
 
-// Jenna's original Phase 2 model configuration is intentionally locked.
-// The chat server already owns the same fallback chain:
-// gemini-3.7-flash -> gemini-3.1-flash-lite -> gemini-flash-latest
-const LOCKED_JENNA_MODEL = 'gemini-3.7-flash';
+// Jarvis Phase 2: the model lock was removed in favor of the ModelRouter.
+// 'auto' delegates model selection to the server-side router (Gemini default);
+// any explicit model id is honored when its provider is configured.
+const DEFAULT_MODEL_SELECTION = 'auto';
+
+// Legacy/stale persisted model ids that must migrate to 'auto'.
+const LEGACY_MODEL_IDS = new Set([
+  'gemini-2.0-flash',
+  'gemini-1.5-pro',
+  'gemini-1.5-flash',
+  'gemini-2.5-flash',
+]);
 
 export class JennaSettingsService {
   private settings: JennaSettings | null = null;
@@ -35,20 +43,21 @@ export class JennaSettingsService {
     const loadedSettings = await platformBridge.getSettings();
     const loadedModel = loadedSettings.ai?.model;
 
-    // Normalize any stale/foreign model selection back to Jenna's locked model.
+    // One-time migration: stale/legacy model ids (or missing value) → 'auto'.
+    const migratedModel =
+      !loadedModel || LEGACY_MODEL_IDS.has(loadedModel) ? DEFAULT_MODEL_SELECTION : loadedModel;
+
     this.settings = {
       ...loadedSettings,
       ai: {
         ...loadedSettings.ai,
-        model: LOCKED_JENNA_MODEL,
+        model: migratedModel,
       },
     };
 
     this.isLoaded = true;
 
-    // Persist the correction so an old Gemini 2.x or other model value cannot
-    // return after a reload.
-    if (loadedModel !== LOCKED_JENNA_MODEL) {
+    if (loadedModel !== migratedModel) {
       await platformBridge.saveSettings(this.settings);
     }
 
@@ -72,7 +81,7 @@ export class JennaSettingsService {
           authType: 'local_device',
         },
         ai: {
-          model: LOCKED_JENNA_MODEL,
+          model: DEFAULT_MODEL_SELECTION,
           temperature: 0.7,
           enableThinking: true,
           streamResponses: true,
@@ -125,11 +134,10 @@ export class JennaSettingsService {
       ...current,
       ...partial,
       profile: { ...current.profile, ...(partial.profile || {}) },
-      // Hard-lock the model regardless of what the UI or persisted settings request.
+      // Honor UI/persisted model selection; the server router validates availability.
       ai: {
         ...current.ai,
         ...(partial.ai || {}),
-        model: LOCKED_JENNA_MODEL,
       },
       memory: { ...current.memory, ...(partial.memory || {}) },
       voice: { ...current.voice, ...(partial.voice || {}) },

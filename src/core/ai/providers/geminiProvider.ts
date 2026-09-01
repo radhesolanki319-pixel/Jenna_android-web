@@ -13,6 +13,7 @@ import {
   AIGenerationResult,
   AIStreamResult,
   AIProviderError,
+  AIToolCall,
 } from '../../../types/ai';
 import { getFallbackChain } from '../registry';
 
@@ -99,11 +100,82 @@ export class GeminiProvider implements AIProvider {
     });
   }
 
-  private formatContents(messages: AIChatMessage[]): Array<{ role: string; parts: Array<{ text: string }> }> {
-    return messages.map((m) => ({
-      role: m.role === 'model' ? 'model' : 'user',
-      parts: [{ text: m.content }],
-    }));
+  private formatContents(messages: AIChatMessage[]): Array<{ role: string; parts: Array<Record<string, any>> }> {
+    return messages.map((m) => {
+      const role = m.role === 'model' ? 'model' : 'user';
+      if (m.parts && m.parts.length > 0) {
+        const parts: Array<Record<string, any>> = [];
+        for (const part of m.parts) {
+          if (part.type === 'text') {
+            parts.push({ text: part.text });
+          } else if (part.type === 'image') {
+            parts.push({ inlineData: { mimeType: part.mimeType, data: part.dataBase64 } });
+          } else if (part.type === 'tool_call') {
+            parts.push({ functionCall: { id: part.id, name: part.name, args: part.args } });
+          } else if (part.type === 'tool_result') {
+            parts.push({
+              functionResponse: {
+                id: part.callId,
+                name: part.name,
+                response: part.ok ? { output: part.content } : { error: part.content },
+              },
+            });
+          }
+        }
+        return { role, parts };
+      }
+      return { role, parts: [{ text: m.content }] };
+    });
+  }
+
+  private buildConfig(options?: AIGenerationOptions): Record<string, any> {
+    const config: Record<string, any> = {};
+    if (options?.systemInstruction) config.systemInstruction = options.systemInstruction;
+    if (typeof options?.temperature === 'number') config.temperature = options.temperature;
+    if (typeof options?.topP === 'number') config.topP = options.topP;
+    if (typeof options?.maxTokens === 'number') config.maxOutputTokens = options.maxTokens;
+    if (options?.responseMimeType) config.responseMimeType = options.responseMimeType;
+    if (options?.responseSchema) config.responseSchema = options.responseSchema;
+    if (options?.tools && options.tools.length > 0) {
+      config.tools = [
+        {
+          functionDeclarations: options.tools.map((t) => ({
+            name: t.name,
+            description: t.description,
+            parametersJsonSchema: t.inputSchema,
+          })),
+        },
+      ];
+      if (options.toolChoice === 'none') {
+        config.toolConfig = { functionCallingConfig: { mode: 'NONE' } };
+      } else if (options.toolChoice && typeof options.toolChoice === 'object') {
+        config.toolConfig = {
+          functionCallingConfig: { mode: 'ANY', allowedFunctionNames: [options.toolChoice.name] },
+        };
+      }
+    }
+    if (options?.thinking) {
+      config.thinkingConfig = options.thinking.enabled
+        ? { thinkingBudget: options.thinking.budgetTokens ?? -1 }
+        : { thinkingBudget: 0 };
+    }
+    return config;
+  }
+
+  private extractToolCalls(source: any): AIToolCall[] {
+    const rawCalls =
+      source?.functionCalls ||
+      source?.candidates?.[0]?.content?.parts
+        ?.filter((p: any) => p.functionCall)
+        .map((p: any) => p.functionCall) ||
+      [];
+    return (rawCalls as any[])
+      .filter((fc) => fc && fc.name)
+      .map((fc, i) => ({
+        id: fc.id || `gcall_${Date.now()}_${i}`,
+        name: fc.name as string,
+        args: (fc.args as Record<string, unknown>) || {},
+      }));
   }
 
   public async generateStream(
@@ -114,23 +186,7 @@ export class GeminiProvider implements AIProvider {
     const client = this.getClient();
     const candidateModels = getFallbackChain(modelId);
     const contents = this.formatContents(messages);
-
-    const config: Record<string, any> = {};
-    if (options.systemInstruction) {
-      config.systemInstruction = options.systemInstruction;
-    }
-    if (typeof options.temperature === 'number') {
-      config.temperature = options.temperature;
-    }
-    if (typeof options.topP === 'number') {
-      config.topP = options.topP;
-    }
-    if (options.responseMimeType) {
-      config.responseMimeType = options.responseMimeType;
-    }
-    if (options.responseSchema) {
-      config.responseSchema = options.responseSchema;
-    }
+    const config = this.buildConfig(options);
 
     let lastError: any = null;
     let totalTokensEmitted = 0;
@@ -142,6 +198,8 @@ export class GeminiProvider implements AIProvider {
 
       try {
         let modelTokens = 0;
+        const collectedToolCalls: AIToolCall[] = [];
+        const seenCallKeys = new Set<string>();
         const stream = await client.models.generateContentStream({
           model: modelToTry,
           contents,
@@ -163,6 +221,26 @@ export class GeminiProvider implements AIProvider {
             totalTokensEmitted++;
             options.onToken(token);
           }
+
+          for (const call of this.extractToolCalls(chunk)) {
+            const key = `${call.name}:${JSON.stringify(call.args)}`;
+            if (!seenCallKeys.has(key)) {
+              seenCallKeys.add(key);
+              collectedToolCalls.push(call);
+            }
+          }
+        }
+
+        if (collectedToolCalls.length > 0) {
+          for (const call of collectedToolCalls) {
+            options.onToolCall?.(call);
+          }
+          return {
+            modelUsed: modelToTry,
+            provider: 'gemini',
+            tokensEmitted: totalTokensEmitted,
+            toolCalls: collectedToolCalls,
+          };
         }
 
         if (modelTokens > 0 || options.isAborted?.()) {
@@ -196,23 +274,7 @@ export class GeminiProvider implements AIProvider {
     const client = this.getClient();
     const candidateModels = getFallbackChain(modelId);
     const contents = this.formatContents(messages);
-
-    const config: Record<string, any> = {};
-    if (options?.systemInstruction) {
-      config.systemInstruction = options.systemInstruction;
-    }
-    if (typeof options?.temperature === 'number') {
-      config.temperature = options.temperature;
-    }
-    if (typeof options?.topP === 'number') {
-      config.topP = options.topP;
-    }
-    if (options?.responseMimeType) {
-      config.responseMimeType = options.responseMimeType;
-    }
-    if (options?.responseSchema) {
-      config.responseSchema = options.responseSchema;
-    }
+    const config = this.buildConfig(options);
 
     let lastError: any = null;
 
@@ -225,11 +287,13 @@ export class GeminiProvider implements AIProvider {
         });
 
         const text = response.text || '';
+        const toolCalls = this.extractToolCalls(response);
         return {
           text,
           modelUsed: modelToTry,
           provider: 'gemini',
           finishReason: response.candidates?.[0]?.finishReason,
+          toolCalls: toolCalls.length ? toolCalls : undefined,
           metadata: {
             usageMetadata: response.usageMetadata,
           },

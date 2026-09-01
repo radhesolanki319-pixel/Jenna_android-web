@@ -14,6 +14,7 @@ import { memoryService } from './core/memoryStore';
 import { settingsService } from './core/settingsStore';
 import { speechService } from './core/speechService';
 import { platformBridge } from './core/bridge';
+import { AgentStream, AgentRunState, initialRunState } from './core/agent/agentClient';
 import { Conversation, Message, JennaSettings } from './types';
 import { Smartphone, Monitor } from 'lucide-react';
 
@@ -31,7 +32,11 @@ export default function App() {
   const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
+  // Agent run state (plan, tool activity, approvals) for the active turn
+  const [agentState, setAgentState] = useState<AgentRunState>(initialRunState());
+
   const abortControllerRef = useRef<AbortController | null>(null);
+  const agentStreamRef = useRef<AgentStream | null>(null);
 
   // Initialize core stores & subscriptions
   useEffect(() => {
@@ -206,12 +211,23 @@ export default function App() {
   };
 
   const handleStopStreaming = useCallback(() => {
+    if (agentStreamRef.current) {
+      agentStreamRef.current.abort();
+      agentStreamRef.current = null;
+    }
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
     setIsStreaming(false);
   }, []);
+
+  const handleResolveApproval = useCallback(
+    (approvalId: string, approved: boolean, grantForRun: boolean) => {
+      agentStreamRef.current?.approve(approvalId, approved, grantForRun);
+    },
+    []
+  );
 
   const triggerContinuousVoiceNextTurn = useCallback(() => {
     const currentSettings = settingsService.get();
@@ -302,90 +318,51 @@ export default function App() {
     let fullAssistantText = '';
 
     try {
-      const response = await fetch('/api/chat/stream', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: historyForApi,
-          model: settings.ai.model,
-          temperature: settings.ai.temperature,
-          injectedMemories,
-          userProfile: settings.profile,
-        }),
-        signal: controller.signal,
+      // Reset per-turn agent state
+      setAgentState(initialRunState());
+
+      const capabilities = platformBridge.getCapabilities();
+
+      let streamError: string | null = null;
+      let doneModel: string | undefined;
+
+      const agentStream = new AgentStream({
+        onToken: (text) => {
+          fullAssistantText += text;
+          conversationService.appendTokenToMessage(assistantMsg.id, text);
+        },
+        onStateChange: (state) => {
+          setAgentState(state);
+          if (state.errorMessage) {
+            streamError = state.errorMessage;
+          }
+        },
+        onDone: (state, model) => {
+          doneModel = model;
+          if (state.outcome === 'failed' && state.errorMessage) {
+            streamError = state.errorMessage;
+          }
+        },
+        onError: (message) => {
+          streamError = message;
+        },
+      });
+      agentStreamRef.current = agentStream;
+
+      await agentStream.start({
+        messages: historyForApi,
+        model: settings.ai.model,
+        temperature: settings.ai.temperature,
+        injectedMemories,
+        userProfile: settings.profile as unknown as Record<string, unknown>,
+        platform: capabilities.platform === 'android' ? 'android' : 'web',
       });
 
-      if (!response.ok) {
-        let errMessage = 'Server error occurred.';
-        try {
-          const errData = await response.json();
-          errMessage = errData.error || errMessage;
-        } catch {
-          errMessage = `HTTP ${response.status}: ${response.statusText}`;
-        }
-        throw new Error(errMessage);
+      if (doneModel) {
+        await conversationService.updateMessage(assistantMsg.id, { modelUsed: doneModel });
       }
 
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let streamError: string | null = null;
-
-      if (reader) {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          // Retain any trailing incomplete line in buffer
-          buffer = lines.pop() ?? '';
-
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed || !trimmed.startsWith('data:')) continue;
-
-            const jsonStr = trimmed.replace(/^data:\s*/, '');
-            if (!jsonStr) continue;
-
-            try {
-              const payload = JSON.parse(jsonStr);
-              if (payload.type === 'token' && typeof payload.token === 'string') {
-                fullAssistantText += payload.token;
-                await conversationService.appendTokenToMessage(assistantMsg.id, payload.token);
-              } else if (payload.type === 'error') {
-                streamError = payload.error || 'Failed to generate response';
-              } else if (payload.type === 'done') {
-                if (payload.model) {
-                  await conversationService.updateMessage(assistantMsg.id, {
-                    modelUsed: payload.model,
-                  });
-                }
-              }
-            } catch (parseErr: any) {
-              console.warn('SSE Parse error:', parseErr);
-            }
-          }
-        }
-
-        // Process any residual in buffer
-        if (buffer.trim().startsWith('data:')) {
-          try {
-            const jsonStr = buffer.trim().replace(/^data:\s*/, '');
-            const payload = JSON.parse(jsonStr);
-            if (payload.type === 'token' && typeof payload.token === 'string') {
-              fullAssistantText += payload.token;
-              await conversationService.appendTokenToMessage(assistantMsg.id, payload.token);
-            } else if (payload.type === 'error') {
-              streamError = payload.error;
-            }
-          } catch {
-            // ignore
-          }
-        }
-      }
-
-      if (streamError) {
+      if (streamError && !fullAssistantText.trim()) {
         throw new Error(streamError);
       }
 
@@ -455,6 +432,7 @@ export default function App() {
     } finally {
       setIsStreaming(false);
       abortControllerRef.current = null;
+      agentStreamRef.current = null;
     }
   };
 
@@ -543,6 +521,8 @@ export default function App() {
           onOpenSettings={() => setIsSettingsOpen(true)}
           onUpdateSettings={handleUpdateSettings}
           settings={settings}
+          agentState={agentState}
+          onResolveApproval={handleResolveApproval}
         />
       </main>
     </div>

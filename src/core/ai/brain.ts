@@ -16,14 +16,24 @@ import {
 } from '../../types/ai';
 import { getModelMetadata, getDefaultModel } from './registry';
 import { GeminiProvider } from './providers/geminiProvider';
+import { OpenAICompatProvider } from './providers/openaiCompatProvider';
+import { AnthropicCompatProvider } from './providers/anthropicCompatProvider';
 
 export class AIBrain {
   private providers: Map<AIProviderId, AIProvider> = new Map();
 
   constructor() {
-    // Register the canonical Gemini provider by default
+    // Register the canonical Gemini provider by default (primary provider).
     const gemini = new GeminiProvider();
     this.registerProvider(gemini);
+
+    // Config-only providers: registered ONLY when credentials are present so
+    // they degrade gracefully (invisible to the router/UI without keys).
+    for (const candidate of [new OpenAICompatProvider(), new AnthropicCompatProvider()]) {
+      if (candidate.isConfigured()) {
+        this.registerProvider(candidate);
+      }
+    }
   }
 
   public registerProvider(provider: AIProvider): void {

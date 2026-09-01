@@ -31,6 +31,18 @@ import { conversationService } from '../core/conversationStore';
 import { speechService } from '../core/speechService';
 import { platformBridge } from '../core/bridge';
 import { AVAILABLE_MODELS } from '../core/ai';
+import { authFetch } from '../core/apiClient';
+
+interface CatalogModel {
+  id: string;
+  provider: string;
+  displayName: string;
+  description: string;
+  tier?: string;
+  available: boolean;
+  verification: string;
+  isDefault: boolean;
+}
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -88,6 +100,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       };
     }
   }, []);
+
+  // Live model catalog from the server-side ModelRouter
+  const [modelCatalog, setModelCatalog] = useState<CatalogModel[] | null>(null);
+  useEffect(() => {
+    if (!isOpen) return;
+    authFetch('/api/models')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data && Array.isArray(data.models)) {
+          setModelCatalog(data.models);
+        }
+      })
+      .catch(() => {
+        // offline / server unavailable — fall back to local registry
+        setModelCatalog(null);
+      });
+  }, [isOpen]);
 
   const handleTestVoiceDiagnostic = async () => {
     setDiagnosticTestStatus('testing');
@@ -444,12 +473,29 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     }
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white focus:outline-hidden focus:border-indigo-500 font-mono"
                   >
-                    {AVAILABLE_MODELS.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.displayName} — {m.description}
+                    <option value="auto">Auto (recommended) — router picks the best model</option>
+                    {(modelCatalog ||
+                      AVAILABLE_MODELS.map((m) => ({
+                        id: m.id,
+                        provider: m.provider,
+                        displayName: m.displayName,
+                        description: m.description,
+                        available: m.provider === 'gemini',
+                        verification: 'unverified',
+                        isDefault: Boolean(m.isDefault),
+                      }))
+                    ).map((m) => (
+                      <option key={m.id} value={m.id} disabled={!m.available}>
+                        {m.displayName} ({m.provider})
+                        {!m.available ? ' — requires API key' : ''}
                       </option>
                     ))}
                   </select>
+                  <p className="mt-1.5 text-[11px] text-slate-500 leading-relaxed">
+                    "Auto" lets the Jarvis ModelRouter select a model per task. Models from
+                    unconfigured providers (OpenAI/Anthropic) appear disabled until their API keys
+                    are added to the server environment.
+                  </p>
                 </div>
 
                 <div>

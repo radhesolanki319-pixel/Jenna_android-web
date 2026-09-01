@@ -28,6 +28,8 @@ import { Message, JennaSettings } from '../types';
 import { speechService } from '../core/speechService';
 import { platformBridge } from '../core/bridge';
 import { memoryService } from '../core/memoryStore';
+import { AgentRunState } from '../core/agent/agentClient';
+import { AgentActivityBlock } from './agent/AgentActivity';
 
 interface ChatViewProps {
   messages: Message[];
@@ -41,6 +43,8 @@ interface ChatViewProps {
   onOpenSettings: () => void;
   onUpdateSettings?: (updates: Partial<JennaSettings>) => Promise<void>;
   settings: JennaSettings;
+  agentState?: AgentRunState;
+  onResolveApproval?: (approvalId: string, approved: boolean, grantForRun: boolean) => void;
 }
 
 export const ChatView: React.FC<ChatViewProps> = ({
@@ -55,6 +59,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onOpenSettings,
   onUpdateSettings,
   settings,
+  agentState,
+  onResolveApproval,
 }) => {
   const [inputText, setInputText] = useState('');
   const [isListening, setIsListening] = useState(false);
@@ -392,6 +398,17 @@ export const ChatView: React.FC<ChatViewProps> = ({
                             Memory Context
                           </span>
                         )}
+                      </div>
+                    )}
+
+                    {/* Agent Activity (plan, tools, approvals) for the streaming turn */}
+                    {!isUser && isStreamingThis && agentState && onResolveApproval && (
+                      <div className="w-full min-w-[260px]">
+                        <AgentActivityBlock
+                          state={agentState}
+                          onResolveApproval={onResolveApproval}
+                          onCancel={onStopStreaming}
+                        />
                       </div>
                     )}
 

@@ -16,7 +16,13 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import android.util.Log
 import android.webkit.JavascriptInterface
+import android.webkit.WebView
 import android.widget.Toast
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 
@@ -32,6 +38,73 @@ class JennaAndroidBridge(
     private var isBackIntercepted = false
     private var initialIntentJson = "{}"
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    // ----------------------------------------------------
+    // Async Bridge v2 (Jarvis Phase 2 — WS6)
+    //
+    // The legacy sync methods below use runBlocking, which stalls the WebView's
+    // JavaScript bridge thread on Room I/O. requestAsync() runs the same
+    // operations on Dispatchers.IO and delivers the result back to JS via
+    // window.__onJennaAndroidAsyncResult(requestId, ok, payloadJson).
+    // The sync methods are kept for backwards compatibility with older web builds.
+    // ----------------------------------------------------
+    private val bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var webViewProvider: (() -> WebView?)? = null
+
+    fun setWebViewProvider(provider: () -> WebView?) {
+        this.webViewProvider = provider
+    }
+
+    fun destroy() {
+        bridgeScope.cancel()
+    }
+
+    private fun postAsyncResult(requestId: String, ok: Boolean, payloadJson: String) {
+        val safeId = JSONObject.quote(requestId)
+        val safePayload = JSONObject.quote(payloadJson)
+        mainHandler.post {
+            webViewProvider?.invoke()?.evaluateJavascript(
+                "if (window.__onJennaAndroidAsyncResult) { window.__onJennaAndroidAsyncResult($safeId, $ok, $safePayload); }",
+                null
+            )
+        }
+    }
+
+    /**
+     * Generic async entry point. `method` selects the operation; `paramsJson` carries
+     * its arguments. The result (or error) is delivered asynchronously to
+     * window.__onJennaAndroidAsyncResult — the caller thread is never blocked.
+     */
+    @JavascriptInterface
+    fun requestAsync(requestId: String, method: String, paramsJson: String) {
+        bridgeScope.launch {
+            try {
+                val params = try { JSONObject(paramsJson) } catch (e: Exception) { JSONObject() }
+                val result: String = when (method) {
+                    "getConversations" -> repository.getConversationsJson()
+                    "saveConversation" -> { repository.saveConversationJson(params.optString("json", "{}")); "{}" }
+                    "deleteConversation" -> { repository.deleteConversation(params.optString("id")); "{}" }
+                    "getMessages" -> repository.getMessagesJson(params.optString("conversationId"))
+                    "saveMessages" -> {
+                        repository.saveMessagesJson(params.optString("conversationId"), params.optString("json", "[]")); "{}"
+                    }
+                    "getMemories" -> repository.getMemoriesJson()
+                    "saveMemory" -> { repository.saveMemoryJson(params.optString("json", "{}")); "{}" }
+                    "deleteMemory" -> { repository.deleteMemory(params.optString("id")); "{}" }
+                    "clearAllMemories" -> { repository.clearAllMemories(); "{}" }
+                    "getUserIdentity" -> repository.getUserIdentityJson() ?: "{}"
+                    "saveUserIdentity" -> repository.saveUserIdentityJson(params.optString("json", "{}"))
+                    "getSettings" -> repository.getSettingsJson() ?: "{}"
+                    "saveSettings" -> { repository.saveSettingsJson(params.optString("json", "{}")); "{}" }
+                    else -> throw IllegalArgumentException("Unknown async bridge method: $method")
+                }
+                postAsyncResult(requestId, true, result)
+            } catch (e: Exception) {
+                Log.e("JennaBridge", "Async bridge error for $method", e)
+                postAsyncResult(requestId, false, JSONObject().put("error", e.message ?: "unknown error").toString())
+            }
+        }
+    }
 
     fun setInitialIntentJson(json: String) {
         this.initialIntentJson = json
